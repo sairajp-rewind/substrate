@@ -223,6 +223,15 @@ func (u *durDirUser) suspend(ctx context.Context) {
 	})
 }
 
+func (u *durDirUser) pause(ctx context.Context) {
+	_ = u.tracedCall(ctx, "PauseActor", func(callCtx context.Context, tr *metadata.MD) error {
+		_, err := u.cfg.APIStub.PauseActor(callCtx, &ateapipb.PauseActorRequest{
+			Actor: u.ref(),
+		}, grpc.Trailer(tr))
+		return err
+	})
+}
+
 // suspendAndDelete suspends the actor before deleting it. DeleteActor requires
 // SUSPENDED or CRASHED; deleting a running actor leaks it. The suspend is
 // unmetered (teardown precondition, not benchmark latency), while the delete
@@ -280,8 +289,9 @@ func (u *durDirUser) params(dynCfg dynconfig.Config) (int64, gluttonpb.ReadMode)
 func (u *durDirUser) step(ctx context.Context, dynCfg dynconfig.Config) {
 	fileSize, readMode := u.params(dynCfg)
 
-	// 1. Suspend actor
-	u.suspend(ctx)
+	// 1. Pause actor (switched from suspend to test local node snapshots)
+	// u.suspend(ctx)
+	u.pause(ctx)
 
 	// 2. Resume — a no-op in implicit mode, where router traffic wakes the actor.
 	if !u.resume(ctx, dynCfg.ResumeMode) {

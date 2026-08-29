@@ -142,6 +142,9 @@ spec:
   volumes:
   - name: data
     durableDir: {}
+  resources:
+    limits:
+      memory: ${ACTOR_MEMORY}
   workerSelector:
     matchLabels:
       workload: benchmark-ateom
@@ -181,6 +184,9 @@ spec:
   volumes:
   - name: data
     durableDir: {}
+  resources:
+    limits:
+      memory: ${ACTOR_MEMORY}
   workerSelector:
     matchLabels:
       workload: benchmark-ateom
