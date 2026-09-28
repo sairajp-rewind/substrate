@@ -1045,3 +1045,241 @@ func TestActorResumer_FlightKeepsCallerTraceContext(t *testing.T) {
 		t.Error("flight RPC lost the caller's sampled flag")
 	}
 }
+
+// TestRequestParking_ThunderingHerd pins what a herd of callers arriving on one
+// cold actor costs: one shared flight, one lot slot per caller, and a retry
+// cadence that actually backs off.
+//
+// Both properties are open in existing coverage.
+// SingleflightDeduplication_FailedFlight pins N callers onto one RPC but uses no
+// lot, and ParkTransitionAcquiresSlot pins one parked caller holding one slot
+// but never coalesces a herd. Nothing pins the gaps between a shared flight's
+// attempts at all, so a backoff that collapsed into a hot loop against ateapi
+// would pass every other test in this file.
+func TestRequestParking_ThunderingHerd(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			callers    = 4
+			expectedIP = "10.0.0.42"
+			// The flight succeeds on its 4th attempt, 700ms in; the budget has to
+			// outlast that without being so wide that a runaway loop still fits.
+			budget = 2 * time.Second
+		)
+		testActorRef := resources.ActorRef{Atespace: "team-a", Name: "actor-cold"}
+
+		cfg := ParkedRequestConfig{
+			Budget:        budget,
+			Max:           8, // above the herd, so the lot never sheds here
+			RetryInterval: 100 * time.Millisecond,
+			RetryFactor:   2.0,
+			RetryJitter:   0, // a jittered gap cannot be asserted exactly
+		}
+		lot := newParkingLot(cfg, nil)
+
+		var mu sync.Mutex
+		var calls int
+		var attemptAt []time.Duration
+		var parkedDuringRetry []int
+		start := time.Now()
+
+		mock := &resumerMockClient{
+			resumeFn: func(ctx context.Context, in *ateapipb.ResumeActorRequest, opts ...grpc.CallOption) (*ateapipb.ResumeActorResponse, error) {
+				mu.Lock()
+				calls++
+				n := calls
+				attemptAt = append(attemptAt, time.Since(start))
+				// The bubble advances fake time only once every goroutine is
+				// durably blocked, so by any retry the whole herd is already
+				// parked and this reads the settled occupancy.
+				if n > 1 {
+					parkedDuringRetry = append(parkedDuringRetry, lot.activeCount())
+				}
+				mu.Unlock()
+
+				if n < 4 {
+					return nil, status.Error(codes.ResourceExhausted, "no free workers available")
+				}
+				return &ateapipb.ResumeActorResponse{
+					Actor: &ateapipb.Actor{
+						Metadata: &ateapipb.ResourceMetadata{Name: testActorRef.Name},
+						Status: &ateapipb.ActorStatus{
+							State:            ateapipb.ActorState_ACTOR_STATE_RUNNING,
+							WorkerAssignment: &ateapipb.WorkerAssignment{WorkerPodIp: expectedIP},
+						},
+					},
+					Resumed: true,
+				}, nil
+			},
+		}
+
+		resumer := NewActorResumer(mock, withParking(cfg), withParkingLot(lot))
+
+		var wg sync.WaitGroup
+		actors := make([]*ateapipb.Actor, callers)
+		outcomes := make([]ResumeOutcome, callers)
+		errs := make([]error, callers)
+		wg.Add(callers)
+		for i := 0; i < callers; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				actors[idx], outcomes[idx], errs[idx] = resumer.ResumeActor(context.Background(), testActorRef)
+			}(i)
+		}
+		wg.Wait()
+
+		var triggered, joined int
+		for i := 0; i < callers; i++ {
+			if errs[i] != nil {
+				t.Fatalf("caller %d: unexpected error: %v", i, errs[i])
+			}
+			if got := actors[i].GetStatus().GetWorkerAssignment().GetWorkerPodIp(); got != expectedIP {
+				t.Errorf("caller %d: worker IP = %q, want %q", i, got, expectedIP)
+			}
+			switch outcomes[i] {
+			case ResumeOutcomeTriggered:
+				triggered++
+			case ResumeOutcomeJoined:
+				joined++
+			default:
+				t.Errorf("caller %d: outcome = %q, want triggered or joined", i, outcomes[i])
+			}
+		}
+		if triggered != 1 || joined != callers-1 {
+			t.Errorf("herd resolved as %d triggered / %d joined, want 1 / %d: the callers did not share one flight",
+				triggered, joined, callers-1)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if calls != 4 {
+			t.Errorf("ResumeActor calls = %d, want 4: %d callers must share one flight's attempts, not multiply them", calls, callers)
+		}
+
+		// Each attempt starts after the sum of the gaps before it, and the gaps
+		// double from RetryInterval: 0/100/200/400ms.
+		wantAt := []time.Duration{0, 100 * time.Millisecond, 300 * time.Millisecond, 700 * time.Millisecond}
+		if len(attemptAt) != len(wantAt) {
+			t.Fatalf("recorded %d attempts, want %d", len(attemptAt), len(wantAt))
+		}
+		for i, want := range wantAt {
+			if attemptAt[i] != want {
+				t.Errorf("attempt %d started at %v, want %v: the shared flight must back off exponentially between attempts",
+					i+1, attemptAt[i], want)
+			}
+		}
+
+		for i, parked := range parkedDuringRetry {
+			if parked != callers {
+				t.Errorf("retry %d saw %d parked callers, want %d: every caller in a coalesced herd holds its own slot",
+					i+2, parked, callers)
+			}
+		}
+		if got := lot.activeCount(); got != 0 {
+			t.Errorf("parked slots after the herd resolved = %d, want 0", got)
+		}
+	})
+}
+
+// TestRequestParking_ClientDisconnect pins what a client hanging up mid-park
+// costs the router: its own slot, and nothing else.
+//
+// TestActorResumer_CallerCancelDoesNotAbortFlight already pins the shared-flight
+// half of this contract, but it cancels during the first RPC — before the park
+// transition — so its caller never holds a slot and awaitFlight's release path
+// never runs. This cancels a caller that is genuinely parked, which is the case
+// where a leaked slot would permanently shrink the lot.
+func TestRequestParking_ClientDisconnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const expectedIP = "10.0.0.43"
+		testActorRef := resources.ActorRef{Atespace: "team-a", Name: "actor-disconnect"}
+
+		cfg := ParkedRequestConfig{
+			Budget:        2 * time.Second,
+			Max:           2,
+			RetryInterval: 100 * time.Millisecond,
+			RetryFactor:   2.0,
+		}
+		lot := newParkingLot(cfg, nil)
+
+		var mu sync.Mutex
+		var calls int
+		mock := &resumerMockClient{
+			resumeFn: func(ctx context.Context, in *ateapipb.ResumeActorRequest, opts ...grpc.CallOption) (*ateapipb.ResumeActorResponse, error) {
+				mu.Lock()
+				calls++
+				n := calls
+				mu.Unlock()
+				// Attempts 1 and 2 hold the flight in retry: 1 parks caller A, and
+				// 2 spans the window where A disconnects and B takes its place.
+				if n < 3 {
+					return nil, status.Error(codes.ResourceExhausted, "no free workers available")
+				}
+				return &ateapipb.ResumeActorResponse{
+					Actor: &ateapipb.Actor{
+						Metadata: &ateapipb.ResourceMetadata{Name: testActorRef.Name},
+						Status: &ateapipb.ActorStatus{
+							State:            ateapipb.ActorState_ACTOR_STATE_RUNNING,
+							WorkerAssignment: &ateapipb.WorkerAssignment{WorkerPodIp: expectedIP},
+						},
+					},
+				}, nil
+			},
+		}
+
+		resumer := NewActorResumer(mock, withParking(cfg), withParkingLot(lot))
+
+		// Caller A starts the flight and parks on it.
+		ctxA, cancelA := context.WithCancel(context.Background())
+		errA := make(chan error, 1)
+		go func() {
+			_, outcome, err := resumer.ResumeActor(ctxA, testActorRef)
+			if outcome != ResumeOutcomeUnknown {
+				t.Errorf("disconnected caller outcome = %q, want %q", outcome, ResumeOutcomeUnknown)
+			}
+			errA <- err
+		}()
+
+		// Wait returns once A is durably blocked, i.e. past the park transition
+		// and holding its slot — exact inside the bubble, unlike a sleep.
+		synctest.Wait()
+		if got := lot.activeCount(); got != 1 {
+			t.Fatalf("parked callers before the disconnect = %d, want 1", got)
+		}
+
+		cancelA()
+		if err := <-errA; !errors.Is(err, context.Canceled) {
+			t.Fatalf("disconnected caller: expected context.Canceled, got %v", err)
+		}
+		// The release is deferred inside awaitFlight, so it has already run by the
+		// time ResumeActor returns: the slot is free while the flight retries on.
+		if got := lot.activeCount(); got != 0 {
+			t.Errorf("parked slots after the disconnect = %d, want 0: a caller that hangs up while parked must release its slot", got)
+		}
+
+		// The flight outlives the caller that started it, so B joins it rather
+		// than starting a second resume for the same actor.
+		resB := make(chan *ateapipb.Actor, 1)
+		go func() {
+			actor, _, err := resumer.ResumeActor(context.Background(), testActorRef)
+			if err != nil {
+				t.Errorf("second caller: unexpected error: %v", err)
+			}
+			resB <- actor
+		}()
+
+		actor := <-resB
+		if got := actor.GetStatus().GetWorkerAssignment().GetWorkerPodIp(); got != expectedIP {
+			t.Errorf("second caller worker IP = %q, want %q", got, expectedIP)
+		}
+		if got := lot.activeCount(); got != 0 {
+			t.Errorf("parked slots after the flight resolved = %d, want 0", got)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		if calls != 3 {
+			t.Errorf("ResumeActor calls = %d, want 3: the disconnect must not restart the flight", calls)
+		}
+	})
+}

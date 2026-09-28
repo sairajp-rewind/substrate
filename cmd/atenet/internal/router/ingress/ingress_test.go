@@ -503,3 +503,66 @@ func TestHandleRequestHeaders_FullLotShedsParkedRequest(t *testing.T) {
 		time.Sleep(600 * time.Millisecond)
 	})
 }
+
+// TestRouting_StaleWorkerRoute pins that the handler re-resolves the worker on
+// every request. The target is whatever WorkerPodIp the current ResumeActor
+// response carries, and nothing caches it across requests, so an actor that
+// migrates between two requests is routed to its new worker on the second.
+//
+// Routing is advisory: the handler only reports the address to Envoy as
+// ORIGINAL_DST dynamic metadata and never dials the worker itself. That makes a
+// stale address a misroute rather than a dial failure, which is exactly the
+// failure a route cache here would introduce — so this guards the absence of
+// one.
+func TestRouting_StaleWorkerRoute(t *testing.T) {
+	const (
+		firstIP  = "10.0.0.10"
+		secondIP = "10.0.0.99"
+	)
+
+	var resumeCalls int
+	clientMock := &mockClient{
+		resumeFn: func(
+			ctx context.Context,
+			in *ateapipb.ResumeActorRequest,
+			opts ...grpc.CallOption,
+		) (*ateapipb.ResumeActorResponse, error) {
+			// The actor migrates to a different worker between the two requests.
+			resumeCalls++
+			workerIP := firstIP
+			if resumeCalls > 1 {
+				workerIP = secondIP
+			}
+			return &ateapipb.ResumeActorResponse{
+				Actor: &ateapipb.Actor{
+					Status: &ateapipb.ActorStatus{
+						State:            ateapipb.ActorState_ACTOR_STATE_RUNNING,
+						WorkerAssignment: &ateapipb.WorkerAssignment{WorkerPodIp: workerIP},
+					},
+				},
+			}, nil
+		},
+	}
+
+	h := New(clientMock, ParkedRequestConfig{Budget: time.Second, Max: 1}, nil)
+	md := requestMetadata("actor-migrating", "team-a")
+
+	res, err := h.HandleRequestHeaders(context.Background(), md)
+	if err != nil {
+		t.Fatalf("first request: HandleRequestHeaders() error = %v", err)
+	}
+	if got, want := dynamicMetadataTarget(res.DynamicMetadata), firstIP+":443"; got != want {
+		t.Errorf("first request target = %q, want %q", got, want)
+	}
+
+	res, err = h.HandleRequestHeaders(context.Background(), md)
+	if err != nil {
+		t.Fatalf("second request: HandleRequestHeaders() error = %v", err)
+	}
+	if got, want := dynamicMetadataTarget(res.DynamicMetadata), secondIP+":443"; got != want {
+		t.Errorf("second request target = %q, want %q: the handler routed to a stale worker", got, want)
+	}
+	if resumeCalls != 2 {
+		t.Errorf("ResumeActor calls = %d, want 2: every request must re-resolve its worker", resumeCalls)
+	}
+}
