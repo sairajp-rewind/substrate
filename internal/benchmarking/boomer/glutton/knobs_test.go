@@ -113,6 +113,41 @@ func TestClassCodecs(t *testing.T) {
 				"negative actor deadline":    `{"actor_deadline": -1}`,
 			},
 		},
+		{
+			name:    "burst",
+			codec:   burstCodec,
+			initial: burstKnobs{gluttonKnobs: gluttonKnobs{WaitTime: dynconfig.WaitTime{MaxWait: dynconfig.Seconds(500 * time.Millisecond)}, MaxPingsPerWake: 1}},
+			valid: `{
+				"min_wait_time": 0.1, "max_wait_time": 0.5,
+				"min_live_time": 9, "max_live_time": 14,
+				"lifecycle_mode": "pause",
+				"mem_target": "2Gi", "mem_churn": "512Mi", "mem_read": "all",
+				"cpu_cores": 2, "cpu_duty_cycle": 0.1,
+				"max_pings_per_wake": 3,
+				"total_actors": 50, "actor_deadline": 60
+			}`,
+			want: burstKnobs{
+				gluttonKnobs: gluttonKnobs{
+					WaitTime:        window,
+					Lifecycle:       dynconfig.Lifecycle{LifecycleMode: dynconfig.LifecycleModePause},
+					MinLive:         dynconfig.Seconds(9 * time.Second),
+					MaxLive:         dynconfig.Seconds(14 * time.Second),
+					MemTarget:       "2Gi",
+					MemChurn:        "512Mi",
+					MemRead:         "all",
+					CPUCores:        2,
+					CPUDutyCycle:    0.1,
+					MaxPingsPerWake: 3,
+				},
+				TotalActors:   50,
+				ActorDeadline: dynconfig.Seconds(60 * time.Second),
+			},
+			invalid: map[string]string{
+				"negative total actors":   `{"total_actors": -1}`,
+				"negative actor deadline": `{"actor_deadline": -1}`,
+				"max live below min live": `{"min_live_time": 14, "max_live_time": 9}`,
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := dynconfig.NewHolder(tc.codec)

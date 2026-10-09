@@ -22,7 +22,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/benchmarking/boomer/dynconfig"
 )
 
-// The three user classes in this package each read their own slice of the
+// The four user classes in this package each read their own slice of the
 // runtime config. The structs below name the keys; the sections carry the
 // defaults a missing key falls back to and the rules a fetched value must
 // pass before the worker takes it on.
@@ -141,6 +141,31 @@ var spawnCodec = dynconfig.Typed[spawnKnobs]{
 		}
 		if k.SpawnConcurrency < 0 {
 			return fmt.Errorf("spawn_concurrency cannot be negative: %d", k.SpawnConcurrency)
+		}
+		if k.ActorDeadline < 0 {
+			return fmt.Errorf("actor_deadline cannot be negative: %v", k.ActorDeadline.Duration())
+		}
+		return nil
+	},
+}
+
+// burstKnobs is the BurstUser slice: GluttonUser's, which its actors read,
+// plus the cohort size and the deadline of each phase. Each zero in the two
+// burst fields keeps the matching boomer-worker flag.
+type burstKnobs struct {
+	gluttonKnobs
+	TotalActors   int               `json:"total_actors"`
+	ActorDeadline dynconfig.Seconds `json:"actor_deadline"`
+}
+
+var burstCodec = dynconfig.Typed[burstKnobs]{
+	Defaults: burstKnobs{gluttonKnobs: gluttonCodec.Defaults},
+	Validate: func(k burstKnobs) error {
+		if err := gluttonCodec.Validate(k.gluttonKnobs); err != nil {
+			return err
+		}
+		if k.TotalActors < 0 {
+			return fmt.Errorf("total_actors cannot be negative: %d", k.TotalActors)
 		}
 		if k.ActorDeadline < 0 {
 			return fmt.Errorf("actor_deadline cannot be negative: %v", k.ActorDeadline.Duration())
