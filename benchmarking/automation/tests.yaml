@@ -605,6 +605,8 @@ tests:
       - "2"
       - "--actor-deadline"
       - "120"
+      - "--trace-probability"
+      - "0.5"
   - name: spawn_1000_actors_c50
     type: locust
     description: "Spawn latency baseline: 1000 actors on 100 workers with concurrency 50"
@@ -629,6 +631,8 @@ tests:
       - "50"
       - "--actor-deadline"
       - "120"
+      - "--trace-probability"
+      - "0.001"
   - name: spawn_2000_actors_c100
     type: locust
     description: "Spawn throughput ceiling: 2000 actors on 100 workers with concurrency 100"
@@ -653,6 +657,8 @@ tests:
       - "100"
       - "--actor-deadline"
       - "120"
+      - "--trace-probability"
+      - "0.001"
   - name: spawn_8000_actors_c100
     type: locust
     description: "Spawn fleet-scale schedulability: 8000 actors on 400 workers with concurrency 100"
@@ -677,6 +683,8 @@ tests:
       - "100"
       - "--actor-deadline"
       - "120"
+      - "--trace-probability"
+      - "0.001"
 #   - name: ingress_routercap_envoy_2cpu
 #     description: "Router capacity: Nighthawk adaptive max-RPS search under a 25ms tail-latency SLO, Envoy at 2 CPUs"
 #     type: nighthawk-ingress
