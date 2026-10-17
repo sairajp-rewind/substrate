@@ -20,6 +20,7 @@ import (
 
 	"go.ate.dev/substrate/internal/apierror"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
+	"google.golang.org/protobuf/proto"
 )
 
 // beginDetachLocked begins a detach of the actor's latest local snapshot,
@@ -38,13 +39,13 @@ func (t *Tracker) beginDetachLocked(ctx context.Context, a *actorSnapshots, back
 }
 
 // Detach makes the actor's latest local snapshot durable, then deletes the
-// actor's local snapshots. It is a no-op when atelet holds no local snapshot
-// for the actor. It fails with Aborted while a Run, Restore, or Checkpoint of
-// the actor is in progress on this node, or once a Run or Restore of the actor
-// has begun since its latest local snapshot, and with FailedPrecondition when
-// no detach can make the snapshot durable. It runs in the calling goroutine
-// rather than through the background queue, once any operation in progress on
-// the actor has ended.
+// actor's local snapshots and directory tree. It is a no-op when atelet holds
+// no local snapshot for the actor. It fails with Aborted while a Run, Restore,
+// or Checkpoint of the actor is in progress on this node, or once a Run or
+// Restore of the actor has begun since its latest local snapshot, and with
+// FailedPrecondition when no detach can make the snapshot durable. It runs in
+// the calling goroutine rather than through the background queue, once any
+// operation in progress on the actor has ended.
 func (t *Tracker) Detach(ctx context.Context, actorUID string) (*ateletpb.ActorSnapshotState, error) {
 	if t.store == nil {
 		return nil, apierror.Unimplemented("atelet has no snapshot store to detach actors with")
@@ -52,17 +53,20 @@ func (t *Tracker) Detach(ctx context.Context, actorUID string) (*ateletpb.ActorS
 	t.lock(actorUID)
 	// Wait for any operation in progress (from a background worker or
 	// another RPC call) to end first; a detach may leave nothing to detach.
-	a, err := t.waitIdleLocked(ctx, actorUID, checkNotHeld)
+	a, lastOp, err := t.waitIdleLocked(ctx, actorUID, checkNotHeld)
 	if err != nil {
 		t.unlock(actorUID)
 		return nil, err
 	}
 	if a == nil || a.LatestLocal == nil {
 		// No local snapshot is stored on this node, so there is no work to be
-		// done.
+		// done. If we waited on a detach that just removed the actor's
+		// directory and entry, report the state that detach produced.
 		st := &ateletpb.ActorSnapshotState{}
 		if a != nil {
 			st = t.stateLocked(a)
+		} else if lastOp != nil && lastOp.state != nil {
+			st = proto.CloneOf(lastOp.state)
 		}
 		t.unlock(actorUID)
 		return st, nil
@@ -99,8 +103,9 @@ func (t *Tracker) backgroundDetach(actorUID string, finish func() (*ateletpb.Act
 
 // finishDetach runs op, a detach of the actor's latest local snapshot: it
 // uploads the snapshot unless already durable, then deletes the actor's local
-// snapshots. background reports whether a worker runs it, rather than a Detach
-// call. A detach Forget abandons leaves the actor alone, and fails.
+// snapshots and directory tree. background reports whether a worker runs it,
+// rather than a Detach call. A detach Forget abandons leaves the actor alone,
+// and fails.
 func (t *Tracker) finishDetach(ctx context.Context, actorUID string, op *actorOp, alreadyDurable, background bool) (*ateletpb.ActorSnapshotState, error) {
 	defer close(op.done)
 	uploaded := false
@@ -119,12 +124,13 @@ func (t *Tracker) finishDetach(ctx context.Context, actorUID string, op *actorOp
 	}
 
 	// The upload is recorded before anything is deleted, and LatestLocal is
-	// cleared only once its files are gone. After a crash or a failed prune in
-	// between, the detach is retried, finds the snapshot durable, and only
-	// prunes. Until then LatestLocal can name a half-deleted copy, which is
-	// safe because the snapshot is durable: Restore reads snapshot.object
-	// when the local copy is unusable. The prune runs with op in progress
-	// (before op.done is closed), so Run, Restore, and Checkpoint wait for it.
+	// cleared only once the actor's directory tree is gone. After a crash or a
+	// failed cleanup in between, the detach is retried, finds the snapshot
+	// durable, and only cleans up. Until then LatestLocal can name a
+	// half-deleted copy, which is safe because the snapshot is durable: Restore
+	// reads snapshot.object when the local copy is unusable. The cleanup runs
+	// with op in progress (before op.done is closed), so Run, Restore, and
+	// Checkpoint wait for it.
 	// TODO: Notify ateapi of the upcoming detach before deleting the actor's
 	// local snapshots, so it stops sending Restores that rely on them.
 	if err == nil {
@@ -134,17 +140,26 @@ func (t *Tracker) finishDetach(ctx context.Context, actorUID string, op *actorOp
 	if err == nil {
 		err = PruneLocalCheckpoints(ctx, actorUID)
 	}
-	if abErr := t.updateOp(actorUID, op, err, func(a *actorSnapshots) {
-		switch {
-		case err == nil:
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil {
+		err = RemoveActorDirs(actorUID)
+	}
+	if err == nil {
+		if abErr := t.updateOp(actorUID, op, nil, func(a *actorSnapshots) {
 			t.clearLatestLocalLocked(a)
-		case ctx.Err() == nil:
+		}); abErr != nil {
+			return nil, abErr
+		}
+	} else if ctx.Err() == nil {
+		if abErr := t.updateOp(actorUID, op, err, func(a *actorSnapshots) {
 			// Detach again once the retry delay has passed, and no sooner
 			// than the detach was due.
 			a.DetachAt = later(a.DetachAt, t.backOffLocked(a))
+		}); abErr != nil {
+			return nil, abErr
 		}
-	}); abErr != nil {
-		return nil, abErr
 	}
 
 	st, err := t.endOp(actorUID, op, err)

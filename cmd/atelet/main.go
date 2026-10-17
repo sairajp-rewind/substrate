@@ -697,7 +697,7 @@ func (s *Atelet) Run(ctx context.Context, req *ateletpb.RunRequest) (resp *atele
 	}()
 
 	s.systemInfoVolumes.Deregister(actorUID)
-	if err := resetActorDirs(actorUID); err != nil {
+	if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 		return nil, fmt.Errorf("while resetting actor dirs: %w", err)
 	}
 
@@ -992,7 +992,7 @@ func (s *Atelet) Checkpoint(ctx context.Context, req *ateletpb.CheckpointRequest
 	}
 
 	// Note: we do not crash the actor if resetting the directory fails.
-	if err := resetActorDirs(actorUID); err != nil {
+	if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 		dCleanup += time.Since(tCleanup)
 		return nil, fmt.Errorf("while resetting actor dirs: %w", err)
 	}
@@ -1374,7 +1374,7 @@ func (s *Atelet) Restore(ctx context.Context, req *ateletpb.RestoreRequest) (res
 	// Not crashing the actor, because terminal errors here indicate problems with atelet,
 	// node or the disk itself.
 	s.systemInfoVolumes.Deregister(actorUID)
-	if err := resetActorDirs(actorUID); err != nil {
+	if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 		return nil, fmt.Errorf("while resetting actor dirs: %w", err)
 	}
 	// A restore may bring another runtime than the one staged here before,
@@ -1643,7 +1643,7 @@ func (s *Atelet) Terminate(ctx context.Context, req *ateletpb.TerminateRequest) 
 	}
 
 	// Reclaim the actor's directories on the node
-	if err := removeActorDirs(actorUID); err != nil {
+	if err := snapshottracker.RemoveActorDirs(actorUID); err != nil {
 		return nil, fmt.Errorf("failed to remove actor directories during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 	}
 
@@ -2007,55 +2007,6 @@ func (d *WorkerDialer) DialWorkerPod(ctx context.Context, podUID string) (*grpc.
 	return conn, nil
 }
 
-// resetActorDirs empties the actor's directories and leaves them in place for
-// its next activation. Use removeActorDirs when the actor will not come back.
-func resetActorDirs(actorUID string) error {
-	// Explicitly leave runsc logs dir untouched.
-
-	// RemoveAllWritable, not os.RemoveAll: the bundle's upper dir can hold
-	// copied-up actor-image directories keeping the image's (possibly
-	// read-only) modes, which atelet can't remove as plain root without first
-	// making them writable. (The rootfs itself is just an empty mountpoint
-	// here: the overlay is mounted in the worker pod's mount namespace, not
-	// atelet's, and is detached by worker at teardown.)
-	if err := resetDir("bundle dir", ateletpath.OCIBundleDir(actorUID), imagecache.RemoveAllWritable, 0o700); err != nil {
-		return err
-	}
-	if err := resetDir("checkpoint-state dir", ateletpath.CheckpointStateDir(actorUID), os.RemoveAll, 0o700); err != nil {
-		return err
-	}
-	if err := resetDir("restore-state dir", ateletpath.RestoreStateDir(actorUID), os.RemoveAll, 0o700); err != nil {
-		return err
-	}
-	if err := resetDir("durable-dir volumes mount dir", ateletpath.DurableDirVolumeMountsDir(actorUID), os.RemoveAll, 0o755); err != nil {
-		return err
-	}
-	// World-readable (0o755): bind-mounted read-only into the actor, whose
-	// workload reads it through the gofer.
-	if err := resetDir("system-info volume roots dir", ateletpath.SystemInfoVolumeRootsDir(actorUID), os.RemoveAll, 0o755); err != nil {
-		return err
-	}
-
-	// Do not call RemoveAll on volume directories in case the unmount failed.
-	// We do not want to delete mount content.
-	volumesDir := ateletpath.ExternalVolumeMountsDir(actorUID)
-	entries, err := os.ReadDir(volumesDir)
-	if err != nil && !os.IsNotExist(err) {
-		return wrapFileSystemErr("while reading volumes dir", err)
-	}
-	for _, entry := range entries {
-		volPath := filepath.Join(volumesDir, entry.Name())
-		if err := os.Remove(volPath); err != nil {
-			return wrapFileSystemErr("while removing volume dir", err)
-		}
-	}
-	if err := os.MkdirAll(volumesDir, 0o755); err != nil {
-		return wrapFileSystemErr("while creating volumes dir", err)
-	}
-
-	return nil
-}
-
 // resetSandboxAssetsDir empties the actor's sandbox assets dir for Restore
 // to stage into. Not part of resetActorDirs: the links an activation holds
 // stay while the actor remains resumable on this node, through Checkpoint
@@ -2065,7 +2016,7 @@ func resetActorDirs(actorUID string) error {
 // Owner-only, like the bundle dir: the worker runs the binaries from here
 // as root.
 func resetSandboxAssetsDir(actorUID string) error {
-	return resetDir("sandbox assets dir", ateletpath.SandboxAssetsDir(actorUID), os.RemoveAll, 0o700)
+	return snapshottracker.ResetDir("sandbox assets dir", ateletpath.SandboxAssetsDir(actorUID), os.RemoveAll, 0o700)
 }
 
 // commitSandboxAssets replaces the actor's sandbox assets dir with the set
@@ -2091,35 +2042,6 @@ func commitSandboxAssets(actorUID, staging string, paths map[string]string) erro
 	}
 	for name, p := range moved {
 		paths[name] = p
-	}
-	return nil
-}
-
-// resetDir empties dir with remove and recreates it with mode. what names the
-// directory in errors.
-func resetDir(what, dir string, remove func(string) error, mode os.FileMode) error {
-	if err := remove(dir); err != nil {
-		return wrapFileSystemErr("while deleting "+what, err)
-	}
-	if err := os.MkdirAll(dir, mode); err != nil {
-		return wrapFileSystemErr("while creating "+what, err)
-	}
-	return nil
-}
-
-// removeActorDirs reclaims the actor's whole directory tree, root included:
-// nothing else on the node deletes it, and no later activation will look here.
-//
-// resetActorDirs runs first for the care a blanket RemoveAll lacks. It refuses
-// to proceed while a volume directory is still populated, so a failed unmount
-// cannot become a deletion of the mount's contents, and it can remove a bundle
-// upper dir carrying an image's read-only modes.
-func removeActorDirs(actorUID string) error {
-	if err := resetActorDirs(actorUID); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(ateletpath.ActorPath(actorUID)); err != nil {
-		return wrapFileSystemErr("while deleting actor dir", err)
 	}
 	return nil
 }

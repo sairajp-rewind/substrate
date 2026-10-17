@@ -37,6 +37,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
 	"go.ate.dev/substrate/cmd/atelet/internal/ateletpath"
+	"go.ate.dev/substrate/cmd/atelet/internal/snapshottracker"
 	"go.ate.dev/substrate/internal/apierror"
 	"go.ate.dev/substrate/internal/ateattr"
 	"go.ate.dev/substrate/internal/atelet"
@@ -943,7 +944,7 @@ func TestRemoveActorDirsReclaimsTheRoot(t *testing.T) {
 	useTempNodeDirs(t)
 	const actorUID = "actor-uid-1"
 
-	if err := resetActorDirs(actorUID); err != nil {
+	if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 		t.Fatalf("resetActorDirs: %v", err)
 	}
 	// Written at Run and deliberately kept out of the directories reset wipes.
@@ -951,7 +952,7 @@ func TestRemoveActorDirsReclaimsTheRoot(t *testing.T) {
 		t.Fatalf("writing sandbox assets file: %v", err)
 	}
 
-	if err := removeActorDirs(actorUID); err != nil {
+	if err := snapshottracker.RemoveActorDirs(actorUID); err != nil {
 		t.Fatalf("removeActorDirs: %v", err)
 	}
 
@@ -983,7 +984,7 @@ func TestRemoveActorDirsKeepsPopulatedVolume(t *testing.T) {
 		t.Fatalf("writing volume contents: %v", err)
 	}
 
-	err := removeActorDirs(actorUID)
+	err := snapshottracker.RemoveActorDirs(actorUID)
 	if err == nil {
 		t.Fatal("removeActorDirs succeeded with a populated volume dir, want an error")
 	}
@@ -1001,7 +1002,7 @@ func TestResetDir(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := resetDir("state dir", dir, os.RemoveAll, 0o750); err != nil {
+		if err := snapshottracker.ResetDir("state dir", dir, os.RemoveAll, 0o750); err != nil {
 			t.Fatalf("resetDir: %v", err)
 		}
 		entries, err := os.ReadDir(dir)
@@ -1015,7 +1016,7 @@ func TestResetDir(t *testing.T) {
 
 	t.Run("names the directory when the remove fails", func(t *testing.T) {
 		boom := errors.New("boom")
-		err := resetDir("state dir", t.TempDir(), func(string) error { return boom }, 0o700)
+		err := snapshottracker.ResetDir("state dir", t.TempDir(), func(string) error { return boom }, 0o700)
 		if !errors.Is(err, boom) {
 			t.Fatalf("resetDir = %v, want it to wrap %v", err, boom)
 		}
@@ -1029,7 +1030,7 @@ func TestResetDir(t *testing.T) {
 		if err := os.WriteFile(file, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := resetDir("state dir", filepath.Join(file, "child"), func(string) error { return nil }, 0o700)
+		err := snapshottracker.ResetDir("state dir", filepath.Join(file, "child"), func(string) error { return nil }, 0o700)
 		if err == nil || !strings.HasPrefix(err.Error(), "while creating state dir: ") {
 			t.Errorf("resetDir = %v, want an error starting %q", err, "while creating state dir: ")
 		}

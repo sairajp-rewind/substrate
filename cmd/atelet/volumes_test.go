@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"go.ate.dev/substrate/cmd/atelet/internal/ateletpath"
+	"go.ate.dev/substrate/cmd/atelet/internal/snapshottracker"
 	"go.ate.dev/substrate/internal/nodepath"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
 	"go.ate.dev/substrate/internal/volume"
@@ -454,7 +455,7 @@ func TestVolumeHostDirectoryCleanup(t *testing.T) {
 		}
 
 		// resetActorDirs cleans up empty volume directories left after unmount.
-		if err := resetActorDirs(actorUID); err != nil {
+		if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 			t.Fatalf("resetActorDirs failed: %v", err)
 		}
 
@@ -496,7 +497,7 @@ func TestVolumeHostDirectoryCleanup(t *testing.T) {
 			t.Fatalf("writing test file: %v", err)
 		}
 
-		err := resetActorDirs(actorUID)
+		err := snapshottracker.ResetActorDirs(actorUID)
 		if err == nil {
 			t.Fatal("expected resetActorDirs to fail on non-empty volume dir, got nil")
 		}
@@ -513,7 +514,7 @@ func TestVolumeHostDirectoryCleanup(t *testing.T) {
 	t.Run("resetActorDirs succeeds cleanly when volumes directory does not exist", func(t *testing.T) {
 		withTempActorsDir(t)
 
-		if err := resetActorDirs(actorUID); err != nil {
+		if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 			t.Fatalf("resetActorDirs failed when volumes dir does not exist: %v", err)
 		}
 

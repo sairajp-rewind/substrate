@@ -1037,7 +1037,7 @@ func TestTerminateWithoutWorkerPodUID(t *testing.T) {
 		snapshotName = "pause-snap-1"
 	)
 
-	if err := resetActorDirs(actorUID); err != nil {
+	if err := snapshottracker.ResetActorDirs(actorUID); err != nil {
 		t.Fatalf("resetActorDirs: %v", err)
 	}
 	snapshotDir := ateletpath.LocalSnapshotDir(actorUID, snapshotName)
@@ -1701,6 +1701,57 @@ func TestPromoteSnapshotFoundAlreadyUploaded(t *testing.T) {
 	}
 
 	if got := a.promote(t, snap).GetLatestDurable(); !proto.Equal(got.GetSnapshot(), snap) || got.GetDurableCompleteTime() != nil {
+		t.Errorf("latest_durable = %v, want %v with no upload time", got, snap)
+	}
+}
+
+// TestPromoteSnapshotAfterDetach verifies that after an actor is detached
+// (its entire directory removed), PromoteSnapshot still succeeds via its
+// remote manifest check in object storage (with UploadLocalSnapshot returning
+// uploaded = false).
+func TestPromoteSnapshotAfterDetach(t *testing.T) {
+	a := runPluginActor(t)
+	store := &trackerStore{s: a.s}
+	a.s.snapshots = snapshottracker.New(t.Context(), store, clock.RealClock{})
+	snap := a.snapshot("pause-snap-1", 1)
+	if _, err := a.checkpoint(t, snap, ateletpb.UploadMode_UPLOAD_MODE_DEFERRED); err != nil {
+		t.Fatalf("Checkpoint (pause): %v", err)
+	}
+
+	// Detach uploads the snapshot and removes the actor directory.
+	st, err := a.s.snapshots.Detach(t.Context(), pluginActorUID)
+	if err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	if st.GetLatestLocal() != nil || st.GetLatestDurable() == nil {
+		t.Fatalf("state = %v, want durable set and local nil", st)
+	}
+	if _, err := os.Stat(ateletpath.ActorPath(pluginActorUID)); !os.IsNotExist(err) {
+		t.Fatalf("actor path %s still exists after detach: %v", ateletpath.ActorPath(pluginActorUID), err)
+	}
+
+	// TrackerStore.UploadLocalSnapshot after detach probes object storage and
+	// reports uploaded = false.
+	uploaded, err := store.UploadLocalSnapshot(t.Context(), pluginActorUID, snapshottracker.SnapshotRef{Snapshot: snap})
+	if err != nil || uploaded {
+		t.Fatalf("UploadLocalSnapshot after detach = (%v, %v), want (false, nil)", uploaded, err)
+	}
+
+	// PromoteSnapshot after detach finds the local snapshot gone, probes object
+	// storage for the manifest uploaded during detach, and succeeds without
+	// re-uploading.
+	resp, err := a.s.PromoteSnapshot(t.Context(), &ateletpb.PromoteSnapshotRequest{
+		Atespace:              "ate-demo",
+		ActorName:             "counter",
+		ActorUid:              pluginActorUID,
+		ActorTemplateAtespace: "default",
+		ActorTemplateName:     "counter",
+		Snapshot:              snap,
+	})
+	if err != nil {
+		t.Fatalf("PromoteSnapshot: %v", err)
+	}
+	if got := resp.GetState().GetLatestDurable(); !proto.Equal(got.GetSnapshot(), snap) || got.GetDurableCompleteTime() != nil {
 		t.Errorf("latest_durable = %v, want %v with no upload time", got, snap)
 	}
 }

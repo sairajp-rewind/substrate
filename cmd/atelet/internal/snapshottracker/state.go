@@ -27,10 +27,10 @@ import (
 )
 
 // saveLocked writes what atelet tracks of the actor to its snapshot state
-// file. An actor whose directory is gone was terminated on this node, so it is
-// not written, and requeueLocked drops its entry as it does once the file is
-// written. Best-effort: if writing fails, the entry stays in memory and atelet
-// carries on from it, and a restart loses what changed.
+// file. An actor whose directory is gone was detached or terminated on this
+// node, so it is not written, and requeueLocked drops its entry as it does
+// once the file is written. Best-effort: if writing fails, the entry stays in
+// memory and atelet carries on from it, and a restart loses what changed.
 func (t *Tracker) saveLocked(a *actorSnapshots) {
 	if err := t.writeStateLocked(a); err != nil {
 		slog.Warn("Failed to save the actor's snapshot state", slog.String("actorUID", a.actorUID), slog.Any("err", err))
@@ -41,7 +41,6 @@ func (t *Tracker) saveLocked(a *actorSnapshots) {
 // and returns the error if writing fails.
 func (t *Tracker) writeStateLocked(a *actorSnapshots) error {
 	if _, err := os.Stat(ateletpath.ActorPath(a.actorUID)); errors.Is(err, os.ErrNotExist) {
-		slog.Warn("Dropping the snapshot state of an actor whose directory is gone", slog.String("actorUID", a.actorUID))
 		a.unsaved = false
 		return nil
 	}

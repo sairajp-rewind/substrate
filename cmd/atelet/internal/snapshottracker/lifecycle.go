@@ -116,7 +116,7 @@ func (t *Tracker) BeginStart(ctx context.Context, actorUID string) (end func(), 
 	t.lock(actorUID)
 	defer t.unlock(actorUID)
 	// Every operation is a detach.
-	a, err := t.waitIdleLocked(ctx, actorUID, nil)
+	a, _, err := t.waitIdleLocked(ctx, actorUID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (t *Tracker) BeginCheckpoint(ctx context.Context, actorUID string) (end fun
 	t.lock(actorUID)
 	defer t.unlock(actorUID)
 	// Every operation is a detach.
-	a, err := t.waitIdleLocked(ctx, actorUID, nil)
+	a, _, err := t.waitIdleLocked(ctx, actorUID, nil)
 	if err != nil {
 		return nil, err
 	}

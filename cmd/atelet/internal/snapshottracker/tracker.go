@@ -55,7 +55,8 @@ type Store interface {
 //  3. The queue hands an actor to one worker at a time, and the number of
 //     workers bounds how many background detaches run at once.
 //  4. A detach, in the background or via the Detach RPC, makes LatestLocal
-//     durable and then deletes all the actor's local snapshots.
+//     durable and then deletes all the actor's local snapshots and its
+//     directory tree on this node.
 //  5. A Run or Restore unschedules the actor's detach as it begins
 //     (BeginStart), and saves that before the workload can start, so atelet
 //     does not detach an actor whose start has begun, even after a restart or

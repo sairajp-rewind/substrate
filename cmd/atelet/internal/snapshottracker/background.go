@@ -54,6 +54,10 @@ type actorOp struct {
 	// done is closed once the operation has ended, and has finished any change
 	// it makes to the actor's local snapshots.
 	done chan struct{}
+	// state is what atelet held for the actor as the operation succeeded, for a
+	// Detach call that waited for an in-progress detach to remove the actor's
+	// directory and entry.
+	state *ateletpb.ActorSnapshotState
 }
 
 // Start queues every actor with a snapshot state file on this node, so its
@@ -241,28 +245,33 @@ func (t *Tracker) endOp(actorUID string, op *actorOp, opErr error) (*ateletpb.Ac
 	if opErr != nil {
 		return nil, opErr
 	}
-	return t.stateLocked(a), nil
+	st := t.stateLocked(a)
+	op.state = st
+	return st, nil
 }
 
 // waitIdleLocked waits, as long as ctx allows, until the actor has no
 // operation in progress (whether started by a background worker or an atelet
-// RPC), and returns the actor's entry, which may be nil. It releases the
-// actor's lock while it waits, so the actor can change meanwhile, and holds
-// it again when it returns. check, if not nil, vets the entry on every pass:
-// an error from it is returned at once, without waiting further.
-func (t *Tracker) waitIdleLocked(ctx context.Context, actorUID string, check func(*actorSnapshots) error) (*actorSnapshots, error) {
+// RPC), and returns the actor's entry and the last operation it waited for,
+// either of which may be nil. It releases the actor's lock while it waits, so
+// the actor can change meanwhile, and holds it again when it returns. check,
+// if not nil, vets the entry on every pass: an error from it is returned at
+// once, without waiting further.
+func (t *Tracker) waitIdleLocked(ctx context.Context, actorUID string, check func(*actorSnapshots) error) (*actorSnapshots, *actorOp, error) {
+	var lastOp *actorOp
 	for {
 		a := t.findLocked(actorUID)
 		if a != nil && check != nil {
 			if err := check(a); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		if a == nil || a.op == nil {
-			return a, nil
+			return a, lastOp, nil
 		}
-		if err := t.waitOpLocked(ctx, actorUID, a.op); err != nil {
-			return nil, err
+		lastOp = a.op
+		if err := t.waitOpLocked(ctx, actorUID, lastOp); err != nil {
+			return nil, nil, err
 		}
 	}
 }
