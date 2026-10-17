@@ -880,8 +880,9 @@ func (x *XdsServer) buildMainInternalCluster() *clusterv3.Cluster {
 // the shared upstream transport socket (SPIFFE URI validation).
 func (x *XdsServer) buildOriginalDstCluster() *clusterv3.Cluster {
 	cluster := &clusterv3.Cluster{
-		Name:           OriginalDstClusterName,
-		ConnectTimeout: durationpb.New(5 * time.Second),
+		Name:            OriginalDstClusterName,
+		ConnectTimeout:  durationpb.New(5 * time.Second),
+		CircuitBreakers: tunnelCircuitBreakers(),
 		ClusterDiscoveryType: &clusterv3.Cluster_Type{
 			Type: clusterv3.Cluster_ORIGINAL_DST,
 		},

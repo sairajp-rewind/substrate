@@ -263,12 +263,12 @@ func (r *taskRuntime) iterate() {
 		}
 		return
 	}
+	actor.noteSuccess()
 
 	// Live window (--min/--max-live-time): exec HelloWorld, then hold the actor
 	// running until the window closes.
 	deadline := time.Now().Add(r.liveWait())
 	maxPings := max(dynconfig.Get[ateEnvKnobs](r.cfg.Dyn).MaxPingsPerWake, 1)
-	execFailed := false
 	for sent := 0; sent < maxPings; sent++ {
 		if sent > 0 {
 			gap := minPingGap + time.Duration(rand.Float64()*float64(maxPingGap-minPingGap))
@@ -279,15 +279,7 @@ func (r *taskRuntime) iterate() {
 				break
 			}
 		}
-		if err := actor.execHelloWorld(ctx); err != nil {
-			execFailed = true
-			if actor.noteExecFailure(err) {
-				user.replaceActor(ctx, actor)
-				return
-			}
-		} else {
-			actor.noteSuccess()
-		}
+		_ = actor.execHelloWorld(ctx)
 	}
 	if remaining := time.Until(deadline); remaining > 0 {
 		r.sleep(remaining)
@@ -296,7 +288,7 @@ func (r *taskRuntime) iterate() {
 		if actor.noteFailure(err) {
 			user.replaceActor(ctx, actor)
 		}
-	} else if !execFailed {
+	} else {
 		actor.noteSuccess()
 	}
 }
@@ -522,10 +514,6 @@ func (u *ateEnvActor) noteFailure(err error) bool {
 	case boomerutil.RetryLater:
 		return false
 	}
-	return u.noteExecFailure(err)
-}
-
-func (u *ateEnvActor) noteExecFailure(err error) bool {
 	u.mu.Lock()
 	u.consecutiveFailures++
 	n := u.consecutiveFailures

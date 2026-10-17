@@ -622,10 +622,10 @@ func TestAteEnvIterate_ReplacesActorOnTerminalResumeFailure(t *testing.T) {
 	}
 }
 
-func TestAteEnvIterate_ReplacesActorOnRepeatedExecFailures(t *testing.T) {
+func TestAteEnvIterate_DoesNotReplaceActorOnExecFailures(t *testing.T) {
 	ctrl := &fakeControlClient{}
 	srv := &fakeProcessServer{
-		startErr: status.Error(codes.Unavailable, "guest wedged"),
+		startErr: status.Error(codes.Unavailable, "router 503"),
 	}
 	rt, _ := newTestRuntime(t, ctrl, srv, dynconfig.LifecycleModeSuspend)
 
@@ -634,11 +634,11 @@ func TestAteEnvIterate_ReplacesActorOnRepeatedExecFailures(t *testing.T) {
 	}
 
 	calls := ctrl.recordedCalls()
-	if got := countCalls(calls, "CreateActor"); got != 2 {
-		t.Errorf("CreateActor count = %d, want 2 (initial + replacement); calls = %v", got, calls)
+	if got := countCalls(calls, "CreateActor"); got != 1 {
+		t.Errorf("CreateActor count = %d, want 1 (exec failures must not replace actor); calls = %v", got, calls)
 	}
-	if got := countCalls(calls, "DeleteActor"); got != 1 {
-		t.Errorf("DeleteActor count = %d, want 1; calls = %v", got, calls)
+	if got := countCalls(calls, "DeleteActor"); got != 0 {
+		t.Errorf("DeleteActor count = %d, want 0; calls = %v", got, calls)
 	}
 }
 

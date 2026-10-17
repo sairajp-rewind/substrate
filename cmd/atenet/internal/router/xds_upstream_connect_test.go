@@ -72,7 +72,12 @@ func TestUpstreamConnectFlag(t *testing.T) {
 		wantTunnels bool
 	}{
 		{
-			name:        "default tunnels to atunnel",
+			name:        "default reaches atunnel over HTTPS",
+			wantTunnels: false,
+		},
+		{
+			name:        "true tunnels to atunnel",
+			args:        []string{"--upstream-connect=true"},
 			wantTunnels: true,
 		},
 		{
@@ -84,8 +89,8 @@ func TestUpstreamConnectFlag(t *testing.T) {
 			args: []string{"--upstream-connect=false", "--upstream-credential-bundle="},
 		},
 		{
-			name:    "default without upstream mTLS rejected",
-			args:    []string{"--upstream-credential-bundle="},
+			name:    "true without upstream mTLS rejected",
+			args:    []string{"--upstream-connect=true", "--upstream-credential-bundle="},
 			wantErr: "--upstream-connect=false",
 		},
 	}
@@ -411,4 +416,5 @@ func TestXdsServer_ActorTunnelClusters(t *testing.T) {
 		t.Error("actor_connect is not HTTP/2; tunnels to one worker would each need a connection")
 	}
 	checkCircuitBreakers(t, c)
+	checkCircuitBreakers(t, x.buildOriginalDstCluster())
 }

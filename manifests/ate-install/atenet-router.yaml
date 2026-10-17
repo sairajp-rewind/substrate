@@ -223,6 +223,7 @@ spec:
         # CONNECT-tunneled ingress (arbitrary-port support).
         - "--port-connect=8081"
         - "--port-connect-tls=8444"
+        - "--upstream-connect=false"
         # Client auth on the TLS listeners (--port-https, --port-connect-tls).
         # A client certificate must chain to the podidentity
         # ClusterTrustBundle, which the envoy container mounts too, and carry
