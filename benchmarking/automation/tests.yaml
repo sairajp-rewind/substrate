@@ -700,6 +700,7 @@ tests:
       - "30"
       - "--trace-probability"
       - "0.0002"
+      - "--no-phase-breakdown"
   - name: ate_env_200k_actor_nomem
     type: locust
     description: "ate-env baseline: 10000 concurrent users for 20 minutes"
@@ -738,3 +739,4 @@ tests:
       - "30"
       - "--trace-probability"
       - "0.0002"
+      - "--no-phase-breakdown"
