@@ -40,7 +40,7 @@ SWEPERF_TEMPLATE_DIR="${MANIFEST_DIR}/sweperf/generated"
 # matching locust tests) are not deployed by default. The glutton-storage
 # template is added when a StorageClass is set, because it needs a CSI driver
 # that not every cluster has.
-read -r -a TEMPLATES <<<"${WORKLOAD_TEMPLATES:-sleep glutton glutton-durdir-data glutton-durdir-full}"
+read -r -a TEMPLATES <<<"${WORKLOAD_TEMPLATES:-sleep glutton glutton-durdir-data glutton-durdir-full ate-env}"
 
 # template_manifest prints the manifest path for ActorTemplate NAME.
 template_manifest() {
@@ -73,6 +73,8 @@ WORKER_MEMORY=""
 # The StorageClass for the glutton-storage external volume. Empty means the
 # template is not deployed.
 STORAGE_CLASS_NAME="${STORAGE_CLASS_NAME:-}"
+# The image for the ate-env benchmark ActorTemplate.
+ATE_ENV_IMAGE="${ATE_ENV_IMAGE:-us-docker.pkg.dev/gke-substrate-release/benchmark/ate-env-guest@sha256:1d38934ef1dac71fcb1f1286de734e06ab2e19747279bccbd37bfe69e0d5bc72}"
 # The address to which an instrumented actor container sends its telemetry.
 # --otlp-endpoint sets it. Without the flag, resolve_otlp_endpoint reads the
 # address that the control plane uses.

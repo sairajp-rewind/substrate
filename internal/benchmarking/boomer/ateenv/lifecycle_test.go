@@ -317,8 +317,8 @@ func newTestRuntime(t *testing.T, ctrl *fakeControlClient, procSrv *fakeProcessS
 		Atespace:      "bench-test",
 		ActorsPerUser: 1,
 		Tracer:        otel.Tracer("test"),
-		Dyn: dynconfig.NewHolder(dynconfig.Config{
-			LifecycleMode: mode,
+		Dyn: dynconfig.Static(ateEnvKnobs{
+			Lifecycle: dynconfig.Lifecycle{LifecycleMode: mode},
 		}),
 	}
 	rt := &taskRuntime{
@@ -708,12 +708,11 @@ func TestAteEnvShutdown_WaitsForInFlightIterate(t *testing.T) {
 	ctrl := &fakeControlClient{}
 	srv := &fakeProcessServer{}
 	rt, fix := newTestRuntime(t, ctrl, srv, dynconfig.LifecycleModeSuspend)
-	rt.cfg.Dyn.Store(dynconfig.Config{
-		LifecycleMode:   dynconfig.LifecycleModeSuspend,
-		MinLive:         5 * time.Second,
-		MaxLive:         5 * time.Second,
-		MinWait:         5 * time.Second,
-		MaxWait:         5 * time.Second,
+	rt.cfg.Dyn = dynconfig.Static(ateEnvKnobs{
+		Lifecycle:       dynconfig.Lifecycle{LifecycleMode: dynconfig.LifecycleModeSuspend},
+		WaitTime:        dynconfig.WaitTime{MinWait: dynconfig.Seconds(5 * time.Second), MaxWait: dynconfig.Seconds(5 * time.Second)},
+		MinLive:         dynconfig.Seconds(5 * time.Second),
+		MaxLive:         dynconfig.Seconds(5 * time.Second),
 		MaxPingsPerWake: 1,
 	})
 

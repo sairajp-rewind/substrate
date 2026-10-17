@@ -61,11 +61,45 @@ const (
 	maxPingGap             = 1 * time.Second
 )
 
+type ateEnvKnobs struct {
+	dynconfig.WaitTime
+	dynconfig.Lifecycle
+	MinLive         dynconfig.Seconds `json:"min_live_time"`
+	MaxLive         dynconfig.Seconds `json:"max_live_time"`
+	MaxPingsPerWake int               `json:"max_pings_per_wake"`
+}
+
+var ateEnvCodec = dynconfig.Typed[ateEnvKnobs]{
+	Defaults: ateEnvKnobs{
+		WaitTime:        dynconfig.WaitTime{MaxWait: dynconfig.Seconds(500 * time.Millisecond)},
+		MaxPingsPerWake: 1,
+	},
+	Validate: func(k ateEnvKnobs) error {
+		if err := k.WaitTime.Validate(); err != nil {
+			return err
+		}
+		if err := k.Lifecycle.Validate(); err != nil {
+			return err
+		}
+		if k.MinLive < 0 {
+			return fmt.Errorf("min_live_time cannot be negative: %v", k.MinLive.Duration())
+		}
+		if k.MaxLive < 0 {
+			return fmt.Errorf("max_live_time cannot be negative: %v", k.MaxLive.Duration())
+		}
+		if k.MaxLive < k.MinLive {
+			return fmt.Errorf("max_live_time (%v) cannot be less than min_live_time (%v)", k.MaxLive.Duration(), k.MinLive.Duration())
+		}
+		return nil
+	},
+}
+
 func init() {
 	userclass.Add(userclass.Entry{
 		Name:       "ate_env",
 		LocustFile: "ate_env.py",
 		UserClass:  userClass,
+		Config:     ateEnvCodec,
 		Init:       initAteEnv,
 	})
 }
@@ -233,7 +267,7 @@ func (r *taskRuntime) iterate() {
 	// Live window (--min/--max-live-time): exec HelloWorld, then hold the actor
 	// running until the window closes.
 	deadline := time.Now().Add(r.liveWait())
-	maxPings := max(r.cfg.Dyn.Load().MaxPingsPerWake, 1)
+	maxPings := max(dynconfig.Get[ateEnvKnobs](r.cfg.Dyn).MaxPingsPerWake, 1)
 	execFailed := false
 	for sent := 0; sent < maxPings; sent++ {
 		if sent > 0 {
@@ -379,20 +413,12 @@ func (r *taskRuntime) shutdown(ctx context.Context) {
 }
 
 func (r *taskRuntime) dynamicWait() time.Duration {
-	cfg := r.cfg.Dyn.Load()
-	return uniformWait(cfg.MinWait, cfg.MaxWait)
+	return dynconfig.Get[ateEnvKnobs](r.cfg.Dyn).WaitTime.Draw()
 }
 
 func (r *taskRuntime) liveWait() time.Duration {
-	cfg := r.cfg.Dyn.Load()
-	return uniformWait(cfg.MinLive, cfg.MaxLive)
-}
-
-func uniformWait(lo, hi time.Duration) time.Duration {
-	if hi <= lo {
-		return lo
-	}
-	return lo + time.Duration(rand.Float64()*float64(hi-lo))
+	knobs := dynconfig.Get[ateEnvKnobs](r.cfg.Dyn)
+	return dynconfig.Uniform(knobs.MinLive.Duration(), knobs.MaxLive.Duration())
 }
 
 // ateEnvUser represents one virtual user (goroutine).
@@ -591,7 +617,7 @@ func (u *ateEnvActor) resume(ctx context.Context) error {
 }
 
 func (u *ateEnvActor) hibernate(ctx context.Context) error {
-	if u.cfg.Dyn.Load().LifecycleMode == dynconfig.LifecycleModePause {
+	if dynconfig.Get[ateEnvKnobs](u.cfg.Dyn).LifecycleMode == dynconfig.LifecycleModePause {
 		return u.pause(ctx)
 	}
 	return u.suspend(ctx)
