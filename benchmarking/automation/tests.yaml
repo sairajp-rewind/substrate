@@ -662,10 +662,11 @@ tests:
 #     nighthawk-ingress:
 #       envoyCpu: 16
 #       tailLatencySloMs: 25
-  - name: glutton_200k_actor_nomem
+  - name: glutton_200k_actor_nomem_uvm
     type: locust
     description: "Glutton baseline: 10000 concurrent users for 20 minutes"
     targetCluster: dev
+    sandboxClass: microvm
     file: /app/tests/glutton.py
     duration: 20m
     users: 10000
@@ -701,10 +702,11 @@ tests:
       - "--trace-probability"
       - "0.0002"
       - "--no-phase-breakdown"
-  - name: ate_env_200k_actor_nomem
+  - name: ate_env_200k_actor_nomem_uvm
     type: locust
     description: "ate-env baseline: 10000 concurrent users for 20 minutes"
     targetCluster: dev
+    sandboxClass: microvm
     file: /app/tests/ate_env.py
     duration: 20m
     users: 10000
