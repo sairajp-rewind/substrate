@@ -178,19 +178,12 @@ func FormatMember(member string) (string, error) {
 //go:embed model.fga
 var modelDSL string
 
-// checkCacheTTL is how long a cached Check result or tuple read is served.
-// A Check result can be computed from a cached tuple read, so a grant or
-// revoke can take up to twice this to apply. Keep it short: at high Check
-// rates, a longer TTL adds few hits but delays policy changes.
-const checkCacheTTL = time.Second
-
 // NewOpenFGAServer creates an embedded OpenFGA server backed by a transaction-aware
 // PostgreSQL datastore on pool. Calling Close on the returned server stops
 // OpenFGA's background workers without closing the caller-owned pool.
 //
-// If cacheChecks is set, each replica caches two things in memory for
-// checkCacheTTL. Policy writes don't invalidate either, so grants and revokes
-// apply once the entries expire:
+// If checkCacheTTL is positive, each replica caches two things in memory for
+// that long:
 //   - The query cache holds Check and sub-Check results, keyed by object,
 //     relation, user and contextual tuples. Every Check includes its object's
 //     parent links as contextual tuples, so this only hits when the same
@@ -198,9 +191,19 @@ const checkCacheTTL = time.Second
 //   - The iterator cache holds tuple list reads from PostgreSQL, keyed by
 //     the query, such as the parent lookup behind "viewer from parent_global".
 //     It doesn't cache single-tuple lookups of direct grants.
-func NewOpenFGAServer(pool *pgxpool.Pool, cacheChecks bool) (*server.Server, error) {
+//
+// Policy writes don't invalidate either cache. Each sub-Check result gets a
+// fresh TTL when it is cached, and a parent result can be computed from a
+// stale one, so a grant or revoke can take up to one TTL per level of the
+// relation chain to apply. The longest chains in model.fga have five levels,
+// such as tag#can_get through atespace#viewer, editor and owner to
+// global#owner.
+func NewOpenFGAServer(pool *pgxpool.Pool, checkCacheTTL time.Duration) (*server.Server, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("postgres pool must not be nil")
+	}
+	if checkCacheTTL < 0 {
+		return nil, fmt.Errorf("check cache TTL must not be negative: %s", checkCacheTTL)
 	}
 	rawDatastore, err := postgres.NewWithDB(pool, nil, sqlcommon.NewConfig())
 	if err != nil {
@@ -209,12 +212,12 @@ func NewOpenFGAServer(pool *pgxpool.Pool, cacheChecks bool) (*server.Server, err
 	opts := []server.OpenFGAServiceV1Option{
 		server.WithDatastore(newTransactionalDatastore(rawDatastore)),
 	}
-	if cacheChecks {
+	if checkCacheTTL > 0 {
 		// The cache controller stays off. It polls the changelog every TTL
-		// to drop entries after a write, which can't beat a 1s TTL. It can
-		// also miss writes: changelog rows are stamped with the transaction
-		// start time, so a long transaction can commit a row older than one
-		// the controller has already seen.
+		// to drop entries after a write, so it can't apply writes sooner
+		// than a short TTL. It can also miss writes: changelog rows are
+		// stamped with the transaction start time, so a long transaction can
+		// commit a row older than one the controller has already seen.
 		opts = append(opts,
 			server.WithCheckQueryCacheEnabled(true),
 			server.WithCheckQueryCacheTTL(checkCacheTTL),

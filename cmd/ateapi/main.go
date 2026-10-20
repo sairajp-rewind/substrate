@@ -87,7 +87,7 @@ var (
 	postgresOwnerRole                 = pflag.String("postgres-owner-role", "", "Required PostgreSQL role assumed by owner connections.")
 	postgresSchema                    = pflag.String("postgres-schema", "substrate", "PostgreSQL schema for Substrate tables. This overrides a search_path connection parameter.")
 	postgresPoolMaxConns              = pflag.Int32("postgres-pool-max-conns", 0, "Maximum connections in the shared Substrate and OpenFGA read/write PostgreSQL pool. Does not affect the owner, watch, or readiness probe pools. The DSN or pgx default is used when unset.")
-	experimentalOpenFGACache          = pflag.Bool("experimental-openfga-cache", false, "Cache OpenFGA Check results and tuple reads in memory for 1s each (experimental). A grant or revoke can take up to 2s to apply.")
+	experimentalOpenFGACacheTTL       = pflag.Duration("experimental-openfga-cache-ttl", 0, "How long to cache OpenFGA Check results and tuple reads in memory (experimental). 0 disables the cache. A grant or revoke can take up to five times this to apply; see docs/guides/authorization.md.")
 	// TODO: Move the authz settings into the hot-reloadable config proto
 	// (agent-substrate/substrate#2021) once it lands, so bootstrap owner
 	// changes take effect without a restart.
@@ -251,7 +251,7 @@ func main() {
 	ateletSPIFFEID := installdefaults.SPIFFEID(ateletNamespace, *ateletServiceAccount)
 	slog.InfoContext(ctx, "Resolved atelet namespace", slog.String("atelet-namespace", ateletNamespace), slog.String("atelet-spiffe-id", ateletSPIFFEID))
 
-	fgaServer, err := authz.NewOpenFGAServer(pool, *experimentalOpenFGACache)
+	fgaServer, err := authz.NewOpenFGAServer(pool, *experimentalOpenFGACacheTTL)
 	if err != nil {
 		serverboot.Fatal(ctx, "Failed to create OpenFGA server", err)
 	}
@@ -512,7 +512,7 @@ func logFlagValues(ctx context.Context) {
 		slog.String("postgres-owner-role", *postgresOwnerRole),
 		slog.String("postgres-schema", *postgresSchema),
 		slog.Int("postgres-pool-max-conns", int(*postgresPoolMaxConns)),
-		slog.Bool("experimental-openfga-cache", *experimentalOpenFGACache),
+		slog.Duration("experimental-openfga-cache-ttl", *experimentalOpenFGACacheTTL),
 		slog.Any("authz-bootstrap-owners", *authzBootstrapOwners),
 		slog.String("actor-id-jwt-pool", *actorIDJWTPoolFile),
 		slog.String("actor-jwt-issuer", *actorJWTIssuer),
