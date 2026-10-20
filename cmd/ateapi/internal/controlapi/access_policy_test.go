@@ -34,7 +34,7 @@ func TestAccessPolicy_GlobalAndAtespaceGovernance(t *testing.T) {
 	ctx := context.Background()
 
 	pool := persistence.Pool()
-	fgaServer, err := authz.NewOpenFGAServer(pool)
+	fgaServer, err := authz.NewOpenFGAServer(pool, false)
 	if err != nil {
 		t.Fatalf("NewOpenFGAServer failed: %v", err)
 	}

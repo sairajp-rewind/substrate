@@ -92,7 +92,7 @@ func SetupPostgresPersistence(t *testing.T) *atepg.Persistence {
 		}
 	})
 	// The server always wires a PolicyManager, so test stores do too.
-	fgaServer, err := authz.NewOpenFGAServer(pool)
+	fgaServer, err := authz.NewOpenFGAServer(pool, false)
 	if err != nil {
 		t.Fatalf("creating OpenFGA server: %v", err)
 	}

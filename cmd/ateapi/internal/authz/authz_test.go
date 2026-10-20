@@ -127,7 +127,7 @@ func startPostgres(t *testing.T) *pgxpool.Pool {
 
 func newTestAuthz(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (*server.Server, string, string) {
 	t.Helper()
-	fgaSrv, err := NewOpenFGAServer(pool)
+	fgaSrv, err := NewOpenFGAServer(pool, false)
 	if err != nil {
 		t.Fatalf("NewOpenFGAServer failed: %v", err)
 	}
@@ -140,7 +140,7 @@ func newTestAuthz(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (*serve
 }
 
 func TestEnsureStoreAndModel_NilArgs(t *testing.T) {
-	if _, err := NewOpenFGAServer(nil); err == nil {
+	if _, err := NewOpenFGAServer(nil, false); err == nil {
 		t.Fatal("expected error when pool is nil in NewOpenFGAServer")
 	}
 	if _, _, err := EnsureStoreAndModel(context.Background(), nil, nil); err == nil {
@@ -346,7 +346,7 @@ func TestTransactionalDatastore_RollbackAndCommit(t *testing.T) {
 	}
 
 	// Closing fgaServer must not close the shared pool.
-	fgaSrv2, err := NewOpenFGAServer(pool)
+	fgaSrv2, err := NewOpenFGAServer(pool, false)
 	if err != nil {
 		t.Fatalf("NewOpenFGAServer failed: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestTransactionalDatastore_RollbackAndCommit(t *testing.T) {
 	}
 	t.Cleanup(singlePool.Close)
 
-	singleFGASrv, err := NewOpenFGAServer(singlePool)
+	singleFGASrv, err := NewOpenFGAServer(singlePool, false)
 	if err != nil {
 		t.Fatalf("NewOpenFGAServer(singlePool) failed: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestAuthorizerAndPolicyManager_RuntimeChecks(t *testing.T) {
 	pool := startPostgres(t)
 	ctx := context.Background()
 
-	fgaSrv, err := NewOpenFGAServer(pool)
+	fgaSrv, err := NewOpenFGAServer(pool, false)
 	if err != nil {
 		t.Fatalf("NewOpenFGAServer failed: %v", err)
 	}
