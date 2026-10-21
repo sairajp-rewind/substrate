@@ -110,6 +110,36 @@ func TestDialOptionsMTLSHandshake(t *testing.T) {
 			t.Fatalf("health check code = %v, want handshake failure", code)
 		}
 	})
+
+	t.Run("with matching ServerName", func(t *testing.T) {
+		opts, err := DialOptions(ClientConfig{
+			K8sClient:        fake.NewSimpleClientset(),
+			CAFile:           caFile,
+			ClientCredBundle: clientBundle,
+			ServerName:       "127.0.0.1",
+		})
+		if err != nil {
+			t.Fatalf("DialOptions() error = %v", err)
+		}
+		if code := healthCheckCode(ctx, t, lis.Addr().String(), opts); code != codes.OK {
+			t.Fatalf("health check code = %v, want %v", code, codes.OK)
+		}
+	})
+
+	t.Run("with mismatched ServerName is rejected", func(t *testing.T) {
+		opts, err := DialOptions(ClientConfig{
+			K8sClient:        fake.NewSimpleClientset(),
+			CAFile:           caFile,
+			ClientCredBundle: clientBundle,
+			ServerName:       "wrong.ate-system.svc",
+		})
+		if err != nil {
+			t.Fatalf("DialOptions() error = %v", err)
+		}
+		if code := healthCheckCode(ctx, t, lis.Addr().String(), opts); code == codes.OK {
+			t.Fatalf("health check code = %v, want handshake failure on SAN mismatch", code)
+		}
+	})
 }
 
 // TestDialOptionsReloadsCAFile verifies that a rotation of the CA file on

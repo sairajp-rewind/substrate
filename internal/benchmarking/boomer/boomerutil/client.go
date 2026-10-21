@@ -15,6 +15,7 @@
 package boomerutil
 
 import (
+	"crypto/tls"
 	"fmt"
 
 	"go.ate.dev/substrate/internal/ateapiauth"
@@ -28,16 +29,33 @@ import (
 )
 
 const (
-	// ateapiCAFile verifies ateapi's servicedns serving cert;
-	// ateapiCredBundle is the benchmark's own pod certificate. Both are
-	// projected in by benchmarking/locust/manifests/locust.yaml.
-	ateapiCAFile     = "/run/servicedns-ca/ca.crt"
-	ateapiCredBundle = "/run/podidentity.podcert.ate.dev/credential-bundle.pem"
+	// DefaultRouterURL is the default HTTPS base URL for atenet-router.
+	DefaultRouterURL = "https://atenet-router.ate-system.svc"
+
+	// servicednsCAFile verifies ateapi's and atenet-router's servicedns serving
+	// certs; podIdentityCredBundle is the benchmark's own pod certificate. Both
+	// are projected in by benchmarking/locust/manifests/locust.yaml.
+	servicednsCAFile      = "/run/servicedns-ca/ca.crt"
+	podIdentityCredBundle = "/run/podidentity.podcert.ate.dev/credential-bundle.pem"
 
 	// ateapiServerName is the DNS SAN on the apiserver's serving cert, which
 	// is shorter than the endpoint the benchmark dials.
 	ateapiServerName = "api.ate-system.svc"
+
+	// routerServerName is the 3-label DNS SAN on atenet-router's servicedns
+	// serving cert.
+	routerServerName = "atenet-router.ate-system.svc"
 )
+
+// RouterTLSConfig returns a mutual-TLS client configuration for dialing
+// atenet-router.
+func RouterTLSConfig() (*tls.Config, error) {
+	return ateapiauth.TLSConfig(ateapiauth.ClientConfig{
+		CAFile:           servicednsCAFile,
+		ClientCredBundle: podIdentityCredBundle,
+		ServerName:       routerServerName,
+	})
+}
 
 // DialControl opens an authenticated gRPC connection to ateapi.
 //
@@ -62,8 +80,8 @@ func DialControl(endpoint string) (*grpc.ClientConn, ateapipb.ControlClient, err
 
 	dialOpts, err := ateapiauth.DialOptions(ateapiauth.ClientConfig{
 		K8sClient:        k8sClient,
-		CAFile:           ateapiCAFile,
-		ClientCredBundle: ateapiCredBundle,
+		CAFile:           servicednsCAFile,
+		ClientCredBundle: podIdentityCredBundle,
 		ServerName:       ateapiServerName,
 	})
 	if err != nil {

@@ -53,9 +53,10 @@ type ClientConfig struct {
 	K8sClient kubernetes.Interface
 }
 
-// DialOptions returns the grpc.DialOption set described by cfg, suitable to
-// pass to grpc.NewClient.
-func DialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
+// TLSConfig returns a mutual-TLS client *tls.Config described by cfg. Both the
+// CA file and the client credential bundle are re-read when their files change,
+// so rotations apply on the next handshake without a redial.
+func TLSConfig(cfg ClientConfig) (*tls.Config, error) {
 	if cfg.CAFile == "" {
 		return nil, fmt.Errorf("ateapiauth: CAFile is required")
 	}
@@ -66,8 +67,9 @@ func DialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
 	if _, err := loadRootCAs(); err != nil {
 		return nil, fmt.Errorf("ateapiauth: loading CA file: %w", err)
 	}
-	tlsCfg := &tls.Config{
+	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
+		ServerName: cfg.ServerName,
 		// Chain verification happens in VerifyConnection against the
 		// reloadable pool, so a CA rotation applies without a redial.
 		InsecureSkipVerify: true, //nolint:gosec
@@ -90,6 +92,16 @@ func DialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
 			})
 			return err
 		},
+		GetClientCertificate: credbundle.ClientLoader(cfg.ClientCredBundle),
+	}, nil
+}
+
+// DialOptions returns the grpc.DialOption set described by cfg, suitable to
+// pass to grpc.NewClient.
+func DialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
+	tlsCfg, err := TLSConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	opts := []grpc.DialOption{
@@ -99,7 +111,6 @@ func DialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithResolvers(k8sresolver.NewBuilder(cfg.K8sClient)))
 	}
 
-	tlsCfg.GetClientCertificate = credbundle.ClientLoader(cfg.ClientCredBundle)
 	opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	return opts, nil
 }
