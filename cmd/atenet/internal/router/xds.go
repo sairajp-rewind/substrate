@@ -219,7 +219,8 @@ const trustDomainSPIFFEPrefix = "spiffe://" + installdefaults.AteletTrustDomain 
 
 // tunnelCircuitBreakerLimit lifts Envoy's default of 1024: there is a tunnel
 // per active actor and port, and idle ones count too.
-const tunnelCircuitBreakerLimit = 65536
+// The limit is set to 1 << 20, 1,048,576.
+const tunnelCircuitBreakerLimit = 1 << 20
 
 // tunnelIdleTimeout closes unused tunnels, which hold actor connections.
 const tunnelIdleTimeout = 60 * time.Second
