@@ -621,8 +621,16 @@ see [automation/ateapi-cold-resume.md](../../benchmarking/automation/ateapi-cold
   `200:3m@1000`, changes it as the step starts. Keep the users at or above the
   rate times the p99 of one resume plus one suspend in seconds, or the step falls
   short of its rate.
+* `--burst-size`: Release cold resumes in waves of up to this many users every
+  `burst_size / target_rps` seconds instead of spacing them one by one (default
+  `0`, smooth pacing). Positive values require `--target-rps > 0`; for a
+  `--ladder` run, also pass `--target-rps` on the command line so the initial
+  config before the first step is valid. Keep the users at or above
+  `burst_size` and the wave interval (`burst_size / target_rps`) at or above the
+  p99 of a wave's resume plus suspend cycle, or fewer than `burst_size` users
+  make each wave and `resume_rps` falls short of `target_rps`.
 
-The web UI shows the same field.
+The web UI shows the same fields.
 
 Trim the start of each ladder step. A rate change reaches boomer at its next
 poll of the master, within 10 s, and a step that adds users carries their
