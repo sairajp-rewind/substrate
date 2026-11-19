@@ -26,7 +26,7 @@ import json
 import re
 from typing import Any
 
-from util import run, run_no_check
+from util import ISOLATE_DELAY_PATTERN, run, run_no_check
 
 NAMESPACE = "ate-system"
 
@@ -42,6 +42,9 @@ API_SERVER_KNOBS = {
     # pgxpool max connections per replica, set through ateapi's env
     # ConfigMap (see set_pool_max_conns).
     "poolMaxConns",
+    # OpenFGA Check query-cache and iterator-cache TTL (Go duration string,
+    # e.g. "10s"; "0" disables), set through ateapi's env ConfigMap.
+    "openfgaCacheTTL",
 }
 
 # Knobs of the `postgres:` section.
@@ -83,6 +86,10 @@ def validate(block: Any) -> None:
         raise ValueError("controlPlane.apiServer.replicas must be an int >= 1")
     if "poolMaxConns" in api and not _is_positive_int(api["poolMaxConns"]):
         raise ValueError("controlPlane.apiServer.poolMaxConns must be an int >= 1")
+    if "openfgaCacheTTL" in api and not _is_duration(api["openfgaCacheTTL"]):
+        raise ValueError(
+            "controlPlane.apiServer.openfgaCacheTTL must be a duration string such as 10s"
+        )
     if not isinstance(pg["stats"], bool):
         raise ValueError("controlPlane.postgres.stats must be a bool")
     args = pg["args"]
@@ -111,6 +118,10 @@ def _check_knobs(path: str, section: Any, allowed: set[str]) -> None:
 
 def _is_positive_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
+def _is_duration(v: Any) -> bool:
+    return isinstance(v, str) and bool(ISOLATE_DELAY_PATTERN.fullmatch(v))
 
 
 def _is_quantity(v: Any) -> bool:
@@ -149,6 +160,8 @@ def shape(cfg: dict[str, Any]) -> None:
         enable_postgres_stats(pg["args"])
     if "poolMaxConns" in api:
         set_pool_max_conns(api["poolMaxConns"])
+    if "openfgaCacheTTL" in api:
+        set_openfga_cache_ttl(api["openfgaCacheTTL"])
     resize_api_server(api)
     # The placement of the run, for comparing runs: a step compares across
     # runs only when ateapi and Postgres sat on the same nodes.
@@ -224,6 +237,7 @@ def enable_postgres_stats(settings: list[str]) -> None:
 # the DSN.
 ENV_CONFIGMAP = "ate-api-server-envvars"
 POOL_MAX_CONNS_KEY = "ATE_API_POSTGRES_POOL_MAX_CONNS"
+OPENFGA_CACHE_TTL_KEY = "ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL"
 
 
 def pool_max_conns_patch(n: int) -> dict[str, Any]:
@@ -237,6 +251,19 @@ def set_pool_max_conns(n: int) -> None:
     run(
         ["kubectl", "-n", NAMESPACE, "patch", "configmap", ENV_CONFIGMAP,
          "--type", "merge", "-p", json.dumps(pool_max_conns_patch(n))]
+    )
+
+
+def openfga_cache_ttl_patch(ttl: str) -> dict[str, Any]:
+    return {"data": {OPENFGA_CACHE_TTL_KEY: ttl}}
+
+
+def set_openfga_cache_ttl(ttl: str) -> None:
+    """Set the OpenFGA Check and iterator cache TTL ateapi reads at start;
+    the resize_api_server rollout that follows picks it up."""
+    run(
+        ["kubectl", "-n", NAMESPACE, "patch", "configmap", ENV_CONFIGMAP,
+         "--type", "merge", "-p", json.dumps(openfga_cache_ttl_patch(ttl))]
     )
 
 

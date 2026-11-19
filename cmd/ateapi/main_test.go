@@ -97,6 +97,22 @@ func TestLoadFlagsFromEnvPoolMaxConns(t *testing.T) {
 	}
 }
 
+func TestLoadFlagsFromEnvOpenFGACacheTTL(t *testing.T) {
+	old := *experimentalOpenFGACacheTTL
+	t.Cleanup(func() { *experimentalOpenFGACacheTTL = old })
+	t.Setenv("ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL", "15s")
+	if err := loadFlagsFromEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if *experimentalOpenFGACacheTTL != 15*time.Second {
+		t.Fatalf("openfga cache ttl = %s, want 15s", *experimentalOpenFGACacheTTL)
+	}
+	t.Setenv("ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL", "-1s")
+	if err := loadFlagsFromEnv(); err == nil || !strings.Contains(err.Error(), "ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL must be a non-negative duration") {
+		t.Fatalf("loadFlagsFromEnv() error = %v, want non-negative duration validation", err)
+	}
+}
+
 func TestValidateActorJWTIssuer(t *testing.T) {
 	for _, tt := range []struct {
 		issuer  string

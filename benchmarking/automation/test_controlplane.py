@@ -47,7 +47,8 @@ class ValidateTest(unittest.TestCase):
     def test_valid_knobs(self):
         controlplane.validate(API)
         controlplane.validate(
-            {"apiServer": {"cpu": "1500m", "memory": "8Gi", "replicas": 2, "poolMaxConns": 16},
+            {"apiServer": {"cpu": "1500m", "memory": "8Gi", "replicas": 2, "poolMaxConns": 16,
+                           "openfgaCacheTTL": "10s"},
              "postgres": {"stats": False}})
         controlplane.validate(
             {**API, "postgres": {"args": ["commit_delay=100", "max_wal_size=16GB"]}})
@@ -73,6 +74,9 @@ class ValidateTest(unittest.TestCase):
             api(replicas=0),
             api(replicas=True),
             api(poolMaxConns="64"),
+            api(openfgaCacheTTL=10),
+            api(openfgaCacheTTL="-1s"),
+            api(openfgaCacheTTL="10"),
             api(memory="4 GiB"),
             pg(stats="yes"),
             pg(statz=True),
@@ -124,12 +128,12 @@ class ShapeTest(unittest.TestCase):
         calls = []
         stub(self, **{
             name: lambda *_, name=name: calls.append(name)
-            for name in ("enable_postgres_stats", "set_pool_max_conns", "resize_api_server", "run_no_check")
+            for name in ("enable_postgres_stats", "set_pool_max_conns", "set_openfga_cache_ttl", "resize_api_server", "run_no_check")
         })
-        controlplane.shape(controlplane.config({"apiServer": {"cpu": 2, "poolMaxConns": 40}}))
+        controlplane.shape(controlplane.config({"apiServer": {"cpu": 2, "poolMaxConns": 40, "openfgaCacheTTL": "10s"}}))
         self.assertEqual(
             [c for c in calls if c != "run_no_check"],
-            ["enable_postgres_stats", "set_pool_max_conns", "resize_api_server"],
+            ["enable_postgres_stats", "set_pool_max_conns", "set_openfga_cache_ttl", "resize_api_server"],
         )
 
     def test_unset_pool_size_keeps_the_install(self):
@@ -197,6 +201,14 @@ class PoolMaxConnsTest(unittest.TestCase):
         self.assertEqual(
             controlplane.pool_max_conns_patch(40),
             {"data": {"ATE_API_POSTGRES_POOL_MAX_CONNS": "40"}},
+        )
+
+
+class OpenFGACacheTTLTest(unittest.TestCase):
+    def test_patch(self):
+        self.assertEqual(
+            controlplane.openfga_cache_ttl_patch("15s"),
+            {"data": {"ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL": "15s"}},
         )
 
 

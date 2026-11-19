@@ -172,7 +172,36 @@ def summarize(prom: str, s: dict[str, Any]) -> dict[str, Any]:
         "pg_walwrite_wait_conns": q(pg_conns % (',state="active",wait_event="WALWrite"', d)),
     }
     out.update(memory(prom, d, secs, b))
+    out.update(openfga_cache(prom, d, secs, b))
     return out
+
+
+def openfga_cache(prom: str, d: str, secs: int, b: int) -> dict[str, Any]:
+    """OpenFGA Check query-cache and tuple iterator-cache hit ratios, lookup
+    rates, and cached item count over the step's window."""
+    cnt = "sum(increase(openfga_%s_cache_%s_count[%s]))"
+    check_hit = scalar(prom, cnt % ("check", "hit", d), b)
+    check_tot = scalar(prom, cnt % ("check", "total", d), b)
+    tuples_hit = scalar(prom, cnt % ("tuples", "hit", d), b)
+    tuples_tot = scalar(prom, cnt % ("tuples", "total", d), b)
+    items = scalar(prom, f"sum(avg_over_time(openfga_cache_item_count[{d}]))", b)
+    return {
+        "openfga_check_cache_hit_ratio": (
+            None if check_hit is None or check_tot is None or check_tot == 0
+            else check_hit / check_tot
+        ),
+        "openfga_check_cache_lookups_per_s": (
+            None if check_tot is None else check_tot / secs
+        ),
+        "openfga_tuples_cache_hit_ratio": (
+            None if tuples_hit is None or tuples_tot is None or tuples_tot == 0
+            else tuples_hit / tuples_tot
+        ),
+        "openfga_tuples_cache_lookups_per_s": (
+            None if tuples_tot is None else tuples_tot / secs
+        ),
+        "openfga_cache_items": items,
+    }
 
 
 def memory(prom: str, d: str, secs: int, b: int) -> dict[str, Any]:

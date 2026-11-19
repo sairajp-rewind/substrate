@@ -485,6 +485,15 @@ func loadFlagsFromEnv() error {
 			*postgresPoolMaxConns = int32(value)
 		}
 	}
+	if !pflag.CommandLine.Changed("experimental-openfga-cache-ttl") {
+		if raw, ok := os.LookupEnv("ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL"); ok && raw != "" {
+			value, err := time.ParseDuration(raw)
+			if err != nil || value < 0 {
+				return fmt.Errorf("ATE_API_EXPERIMENTAL_OPENFGA_CACHE_TTL must be a non-negative duration")
+			}
+			*experimentalOpenFGACacheTTL = value
+		}
+	}
 	return nil
 }
 

@@ -114,6 +114,20 @@ class SummarizeTest(unittest.TestCase):
         self.assertAlmostEqual(got["pg_cache_hit_ratio"], 0.99)
         self.assertAlmostEqual(got["pg_blks_read_per_s"], 10 / 145)
 
+    def test_openfga_cache_metrics(self):
+        got = self.summarize([
+            ("openfga_check_cache_hit_count", value(800)),
+            ("openfga_check_cache_total_count", value(1000)),
+            ("openfga_tuples_cache_hit_count", value(1900)),
+            ("openfga_tuples_cache_total_count", value(2000)),
+            ("openfga_cache_item_count", value(4200)),
+        ])
+        self.assertAlmostEqual(got["openfga_check_cache_hit_ratio"], 0.8)
+        self.assertAlmostEqual(got["openfga_check_cache_lookups_per_s"], 1000 / 145)
+        self.assertAlmostEqual(got["openfga_tuples_cache_hit_ratio"], 0.95)
+        self.assertAlmostEqual(got["openfga_tuples_cache_lookups_per_s"], 2000 / 145)
+        self.assertAlmostEqual(got["openfga_cache_items"], 4200.0)
+
     def test_walwrite_waiters_come_from_their_own_query(self):
         got = self.summarize([('wait_event="WALWrite"', value(42)), ('wait_event_type="Lock"', value(3))])
         self.assertEqual(got["pg_walwrite_wait_conns"], 42.0)
