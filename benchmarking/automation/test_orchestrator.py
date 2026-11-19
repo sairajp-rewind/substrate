@@ -743,5 +743,13 @@ class RunMetadataTest(unittest.TestCase):
         self.assertEqual(job["spec"]["template"]["spec"]["containers"][0]["args"][-1], md)
 
 
+class CheckedInTestsYamlTest(unittest.TestCase):
+    def test_checked_in_tests_yaml_validates(self):
+        path = os.path.join(os.path.dirname(__file__), "tests.yaml")
+        with open(path, encoding="utf-8") as f:
+            tests = yaml.safe_load(f)["tests"]
+        orchestrator.validate_and_normalize_tests(tests)
+
+
 if __name__ == "__main__":
     unittest.main()
