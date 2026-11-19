@@ -19,3 +19,4 @@ protobuf>=7.35.1
 grpcio>=1.84.1
 requests
 google-cloud-storage
+kubernetes

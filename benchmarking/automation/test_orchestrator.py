@@ -17,6 +17,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -25,7 +26,7 @@ from unittest import mock
 import yaml
 
 import orchestrator
-from testtypes import locust
+from testtypes import locust, nighthawk_ingress
 
 
 class SelectTestsTest(unittest.TestCase):
@@ -209,6 +210,102 @@ class RunnerSizingTest(unittest.TestCase):
         subs = {"JOB_NAME": "j", "IMAGE": "i", "TAG": "t", "NAME": "n", "DEST": "d"}
         subs.update(locust.job_subs({"file": "f", "duration": "1m", "users": 1}))
         self.assertNotIn("${", orchestrator.render_template(self.TMPL, subs))
+
+
+class RunnerObserverPermissionsTest(unittest.TestCase):
+    """Locust and nighthawk-ingress runner Jobs both declare pod discovery
+    RBAC and worker pprof NetworkPolicy ingress rules."""
+
+    MANIFESTS = os.path.join(os.path.dirname(__file__), "manifests")
+
+    def _render_docs(self, name: str):
+        subs = {"JOB_NAME": "j", "IMAGE": "i", "TAG": "t", "NAME": "n", "DEST": "d"}
+        if name == "runner-job.yaml.tmpl":
+            subs.update(locust.job_subs({"file": "f", "duration": "1m", "users": 1}))
+        else:
+            subs["ATE_ATEAPI_CLIENT_AUTH"] = "token"
+            subs.update(
+                nighthawk_ingress.job_subs(
+                    {"workerCount": 2, "nighthawk-ingress": {"envoyCpu": 2}}
+                )
+            )
+        text = orchestrator.render_template(os.path.join(self.MANIFESTS, name), subs)
+        self.assertIsNone(re.search(r"\$\{[A-Z0-9_]+\}", text))
+        return [d for d in yaml.safe_load_all(text) if d]
+
+    def test_both_templates_declare_pod_discovery_and_worker_pprof_policy(self):
+        for name in ("runner-job.yaml.tmpl", "nighthawk-ingress-runner-job.yaml.tmpl"):
+            with self.subTest(template=name):
+                docs = self._render_docs(name)
+                cr = next(
+                    (
+                        d
+                        for d in docs
+                        if d.get("kind") == "ClusterRole"
+                        and d["metadata"]["name"] == "benchmark-runner-pod-discovery"
+                    ),
+                    None,
+                )
+                self.assertIsNotNone(cr)
+                self.assertEqual(
+                    cr["rules"],
+                    [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}],
+                )
+
+                crb = next(
+                    (
+                        d
+                        for d in docs
+                        if d.get("kind") == "ClusterRoleBinding"
+                        and d["metadata"]["name"] == "benchmark-runner-pod-discovery"
+                    ),
+                    None,
+                )
+                self.assertIsNotNone(crb)
+                self.assertEqual(
+                    crb["roleRef"],
+                    {
+                        "apiGroup": "rbac.authorization.k8s.io",
+                        "kind": "ClusterRole",
+                        "name": "benchmark-runner-pod-discovery",
+                    },
+                )
+                self.assertEqual(
+                    crb["subjects"],
+                    [{"kind": "ServiceAccount", "name": "benchmark-runner", "namespace": "benchmarking"}],
+                )
+
+                np = next(
+                    (
+                        d
+                        for d in docs
+                        if d.get("kind") == "NetworkPolicy"
+                        and d["metadata"]["name"] == "benchmark-runner-worker-pprof"
+                    ),
+                    None,
+                )
+                self.assertIsNotNone(np)
+                self.assertEqual(np["metadata"]["namespace"], "benchmark-workloads")
+                self.assertEqual(
+                    np["spec"]["podSelector"],
+                    {"matchExpressions": [{"key": "ate.dev/worker-pool", "operator": "Exists"}]},
+                )
+                self.assertEqual(np["spec"]["policyTypes"], ["Ingress"])
+                self.assertEqual(
+                    np["spec"]["ingress"],
+                    [
+                        {
+                            "from": [
+                                {
+                                    "namespaceSelector": {
+                                        "matchLabels": {"kubernetes.io/metadata.name": "benchmarking"}
+                                    }
+                                }
+                            ],
+                            "ports": [{"port": "pprof", "protocol": "TCP"}],
+                        }
+                    ],
+                )
 
 
 class RunnerNamespaceTest(unittest.TestCase):

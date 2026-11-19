@@ -90,6 +90,7 @@ COPY --from=protogen /out/nighthawk.desc /app/nighthawk.desc
 # imports locust).
 COPY benchmarking/locust/common/__init__.py /app/common/__init__.py
 COPY benchmarking/locust/common/ateapi_channel.py /app/common/ateapi_channel.py
+COPY benchmarking/locust/common/observers/ /app/common/observers/
 COPY --from=ateprotos /out/ /app/common/
 COPY benchmarking/nighthawk_common /app/nighthawk_common
 
