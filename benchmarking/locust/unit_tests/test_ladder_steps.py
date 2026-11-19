@@ -119,6 +119,107 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(got["pg_walwrite_wait_conns"], 42.0)
         self.assertEqual(got["pg_lock_wait_conns"], 3.0)
 
+    def test_authz_queries_and_windows(self):
+        seen_calls = []
+
+        def fake_get_json(url):
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            q = params["query"][0]
+            t = int(params["time"][0])
+            seen_calls.append((q, t))
+            if "ate_authz_check_duration_seconds" in q:
+                if 'ate_authz_relation="can_resume"' in q:
+                    return {"status": "success", "data": {"result": value(1.25)}}
+                if 'ate_authz_relation="can_suspend"' in q:
+                    return {"status": "success", "data": {"result": value(2.5)}}
+                if 'ate_authz_relation="can_create_actor"' in q:
+                    return {"status": "success", "data": {"result": value(3.75)}}
+                if 'ate_authz_relation="can_use_template"' in q:
+                    return {"status": "success", "data": {"result": value(4.5)}}
+            if 'name="SuspendActorAsync"' in q and "locust_server_duration_milliseconds" in q:
+                return {"status": "success", "data": {"result": value(12.0)}}
+            if 'name="CreateActor"' in q and "locust_server_duration_milliseconds" in q:
+                return {"status": "success", "data": {"result": value(25.0)}}
+            return {"status": "success", "data": {"result": []}}
+
+        with mock.patch.object(ladder_steps, "_get_json", fake_get_json):
+            got = ladder_steps.summarize("http://prom", self.STEP)
+
+        want_t = T0 + 175
+        authz_qs = [q for q, _ in seen_calls if "ate_authz_check_duration_seconds" in q]
+        self.assertEqual(len(authz_qs), 20)
+        for q in authz_qs:
+            self.assertIn('job="ate-api-server"', q)
+            self.assertIn('ate_authz_decision="allowed"', q)
+            self.assertIn("* 1000", q)
+
+        steady_qs = [
+            (q, t) for q, t in seen_calls
+            if 'ate_authz_relation="can_resume"' in q
+            or 'ate_authz_relation="can_suspend"' in q
+            or ('name="SuspendActorAsync"' in q and "locust_server_duration_milliseconds" in q)
+        ]
+        self.assertTrue(steady_qs)
+        for q, t in steady_qs:
+            self.assertIn("[145s]", q)
+            self.assertEqual(t, want_t)
+
+        setup_qs = [
+            (q, t) for q, t in seen_calls
+            if 'ate_authz_relation="can_create_actor"' in q
+            or 'ate_authz_relation="can_use_template"' in q
+            or ('name="CreateActor"' in q and "locust_server_duration_milliseconds" in q)
+        ]
+        self.assertEqual(len(setup_qs), 15)
+        for q, t in setup_qs:
+            self.assertIn(f"@ {T0}", q)
+            self.assertEqual(t, want_t)
+
+        for stat in ("p50", "p90", "p95", "p99", "mean"):
+            self.assertEqual(got[f"authz_resume_{stat}_ms"], 1.25)
+            self.assertEqual(got[f"authz_suspend_{stat}_ms"], 2.5)
+            self.assertEqual(got[f"authz_create_actor_{stat}_ms"], 3.75)
+            self.assertEqual(got[f"authz_use_template_{stat}_ms"], 4.5)
+            self.assertEqual(got[f"pause_server_{stat}_ms"], 12.0)
+            self.assertEqual(got[f"create_server_{stat}_ms"], 25.0)
+
+        nan_setup = self.summarize([
+            ('ate_authz_relation="can_create_actor"', value("NaN")),
+            ('ate_authz_relation="can_use_template"', value("NaN")),
+            ('name="CreateActor"', value("NaN")),
+        ])
+        for stat in ("p50", "p90", "p95", "p99", "mean"):
+            self.assertIsNone(nan_setup[f"authz_create_actor_{stat}_ms"])
+            self.assertIsNone(nan_setup[f"authz_use_template_{stat}_ms"])
+            self.assertIsNone(nan_setup[f"create_server_{stat}_ms"])
+
+    def test_openfga_counters_and_missing_series(self):
+        got = self.summarize([
+            ('sum(increase(openfga_datastore_query_count_sum{job="ate-api-server"}[145s]))/145', value(2.0)),
+            ('openfga_check_cache_hit_count{job="ate-api-server"}[145s]', value(80)),
+            ('openfga_check_cache_total_count{job="ate-api-server"}[145s]', value(100)),
+            ('openfga_tuples_cache_hit_count{job="ate-api-server"}[145s]', value(0)),
+            ('openfga_tuples_cache_total_count{job="ate-api-server"}[145s]', value(0)),
+            ('openfga_cache_item_count{job="ate-api-server"}[145s]', value(512)),
+        ])
+        self.assertEqual(got["openfga_db_queries_per_s"], 2.0)
+        self.assertAlmostEqual(got["openfga_check_cache_hit_ratio"], 0.8)
+        self.assertIsNone(got["openfga_tuples_cache_hit_ratio"])
+        self.assertEqual(got["openfga_cache_items"], 512.0)
+
+        missing_total = self.summarize([
+            ('openfga_check_cache_hit_count{job="ate-api-server"}', value(10)),
+        ])
+        self.assertIsNone(missing_total["openfga_check_cache_hit_ratio"])
+
+        missing = self.summarize([])
+        self.assertIsNone(missing["openfga_db_queries_per_s"])
+        self.assertIsNone(missing["openfga_check_cache_hit_ratio"])
+        self.assertIsNone(missing["openfga_tuples_cache_hit_ratio"])
+        self.assertIsNone(missing["openfga_cache_items"])
+        self.assertIsNone(missing["authz_resume_p99_ms"])
+        self.assertIsNone(missing["create_server_mean_ms"])
+
     def test_query_trims_the_url_and_times_out(self):
         opened = []
 
@@ -156,6 +257,30 @@ class StatsRecordTest(unittest.TestCase):
         summary = {"step": 1, "window": [10, 20], "failures": {}, "ateapi_cores_per_replica": []}
         m = ladder_steps.stats_record(summary, "ts", "c", "t")["measurements"]
         self.assertIsNone(m["ateapi_cores_busiest_replica"])
+
+    def test_new_authz_and_openfga_fields_survive_flattening(self):
+        with mock.patch.object(ladder_steps, "_get_json", prometheus([
+            ('ate_authz_relation="can_resume"', value(1.5)),
+            ('openfga_datastore_query_count_sum', value(3.0)),
+            ('openfga_cache_item_count', value(64)),
+        ])):
+            summary = ladder_steps.summarize("http://prom", SummarizeTest.STEP)
+        m = ladder_steps.stats_record(summary, "ts", "c", "t")["measurements"]
+        expected_keys = [
+            "pause_server_p50_ms", "pause_server_p90_ms", "pause_server_p95_ms", "pause_server_p99_ms",
+            "create_server_p50_ms", "create_server_p90_ms", "create_server_p95_ms",
+            "create_server_p99_ms", "create_server_mean_ms",
+            "openfga_db_queries_per_s", "openfga_check_cache_hit_ratio",
+            "openfga_tuples_cache_hit_ratio", "openfga_cache_items",
+        ]
+        for prefix in ("authz_resume", "authz_suspend", "authz_create_actor", "authz_use_template"):
+            for stat in ("p50", "p90", "p95", "p99", "mean"):
+                expected_keys.append(f"{prefix}_{stat}_ms")
+        for key in expected_keys:
+            self.assertIn(key, m)
+        self.assertEqual(m["authz_resume_p99_ms"], 1.5)
+        self.assertEqual(m["openfga_db_queries_per_s"], 3.0)
+        self.assertEqual(m["openfga_cache_items"], 64.0)
 
 
 class AppendLadderStepsTest(unittest.TestCase):
@@ -202,8 +327,8 @@ class AppendLadderStepsTest(unittest.TestCase):
 
         def get_json(url):
             calls.append(url)
-            # Step 1 takes some 35 queries, so this fails within step 2.
-            if len(calls) > 40:
+            # Step 1 takes ~70 queries, so this fails within step 2.
+            if len(calls) > 80:
                 return {"status": "error"}
             return {"status": "success", "data": {"result": []}}
 
@@ -215,7 +340,7 @@ class AppendLadderStepsTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     ladder_steps.append_ladder_steps(
                         jsonl_path, log_path, "http://prom", "ts", "c", "t", io.StringIO())
-            self.assertGreater(len(calls), 40)
+            self.assertGreater(len(calls), 80)
             self.assertEqual(jsonl_path.read_text(), '{"metric": "locust"}\n')
 
 

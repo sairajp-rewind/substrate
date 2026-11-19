@@ -110,13 +110,25 @@ def by_label(prom: str, q: str, t: int, label: str) -> dict[str, float]:
 def summarize(prom: str, s: dict[str, Any]) -> dict[str, Any]:
     """One step's throughput, latency, CPU and Postgres figures over its
     steady window."""
-    a, b = s["start"] + SETTLE, s["end"] - TAIL
+    t0 = s["start"]
+    a, b = t0 + SETTLE, s["end"] - TAIL
     secs = b - a
     d = f"{secs}s"
     req = 'locust_requests_total{name="%s",status="%s"}'
     hist = 'histogram_quantile(%s, sum by (le) (increase(%s_bucket{name="%s"%s}[%s])))'
     mean = ('sum(increase(%s_sum{name="%s"%s}[%s]))'
             '/sum(increase(%s_count{name="%s"%s}[%s]))')
+    authz_hist = (
+        'histogram_quantile(%s, sum by (le) '
+        '(increase(ate_authz_check_duration_seconds_bucket'
+        '{job="ate-api-server",ate_authz_relation="%s",ate_authz_decision="allowed"}[%s]))) * 1000'
+    )
+    authz_mean = (
+        '(sum(increase(ate_authz_check_duration_seconds_sum'
+        '{job="ate-api-server",ate_authz_relation="%s",ate_authz_decision="allowed"}[%s]))'
+        '/sum(increase(ate_authz_check_duration_seconds_count'
+        '{job="ate-api-server",ate_authz_relation="%s",ate_authz_decision="allowed"}[%s]))) * 1000'
+    )
     cpu = 'sum(increase(container_cpu_usage_seconds_total{namespace="ate-system",container="%s"}[%s]))/%d'
     thr = ('sum(increase(container_cpu_cfs_throttled_periods_total{namespace="ate-system",container="ate-api-server"}[%s]))'
            '/sum(increase(container_cpu_cfs_periods_total{namespace="ate-system",container="ate-api-server"}[%s]))')
@@ -132,6 +144,54 @@ def summarize(prom: str, s: dict[str, Any]) -> dict[str, Any]:
 
     def mean_ms(metric: str, name: str, extra: str) -> float | None:
         return q(mean % (metric, name, extra, d, metric, name, extra, d))
+
+    # VU setup RPCs fire in the first couple of seconds of step 1, often before
+    # the first Prometheus scrape. Exact @ t0 deltas keep newly-born series
+    # from returning zero increase across the burst.
+    def setup_latency(metric: str, name: str, quantile: float) -> float | None:
+        buckets = f'{metric}_bucket{{name="{name}"}}'
+        now = f"sum by (le) ({buckets})"
+        then = f"sum by (le) ({buckets} @ {t0})"
+        return q(f"histogram_quantile({quantile}, {now} - ({then} or {now} * 0))")
+
+    def setup_mean_ms(metric: str, name: str) -> float | None:
+        s_sel, c_sel = f'{metric}_sum{{name="{name}"}}', f'{metric}_count{{name="{name}"}}'
+        ds = f"(sum({s_sel}) - (sum({s_sel} @ {t0}) or vector(0)))"
+        dc = f"(sum({c_sel}) - (sum({c_sel} @ {t0}) or vector(0)))"
+        return q(f"{ds}/{dc}")
+
+    def authz_stats(prefix: str, relation: str) -> dict[str, float | None]:
+        return {
+            f"{prefix}_p50_ms": q(authz_hist % (0.5, relation, d)),
+            f"{prefix}_p90_ms": q(authz_hist % (0.9, relation, d)),
+            f"{prefix}_p95_ms": q(authz_hist % (0.95, relation, d)),
+            f"{prefix}_p99_ms": q(authz_hist % (0.99, relation, d)),
+            f"{prefix}_mean_ms": q(authz_mean % (relation, d, relation, d)),
+        }
+
+    def authz_setup_stats(prefix: str, relation: str) -> dict[str, float | None]:
+        sel = f'job="ate-api-server",ate_authz_relation="{relation}",ate_authz_decision="allowed"'
+        buckets = f"ate_authz_check_duration_seconds_bucket{{{sel}}}"
+        s_sel = f"ate_authz_check_duration_seconds_sum{{{sel}}}"
+        c_sel = f"ate_authz_check_duration_seconds_count{{{sel}}}"
+        now = f"sum by (le) ({buckets})"
+        then = f"sum by (le) ({buckets} @ {t0})"
+        ds = f"(sum({s_sel}) - (sum({s_sel} @ {t0}) or vector(0)))"
+        dc = f"(sum({c_sel}) - (sum({c_sel} @ {t0}) or vector(0)))"
+        return {
+            f"{prefix}_p50_ms": q(f"histogram_quantile(0.5, {now} - ({then} or {now} * 0)) * 1000"),
+            f"{prefix}_p90_ms": q(f"histogram_quantile(0.9, {now} - ({then} or {now} * 0)) * 1000"),
+            f"{prefix}_p95_ms": q(f"histogram_quantile(0.95, {now} - ({then} or {now} * 0)) * 1000"),
+            f"{prefix}_p99_ms": q(f"histogram_quantile(0.99, {now} - ({then} or {now} * 0)) * 1000"),
+            f"{prefix}_mean_ms": q(f"({ds}/{dc}) * 1000"),
+        }
+
+    def cache_hit_ratio(kind: str) -> float | None:
+        hit = q(f'sum(increase(openfga_{kind}_cache_hit_count{{job="ate-api-server"}}[{d}]))')
+        total = q(f'sum(increase(openfga_{kind}_cache_total_count{{job="ate-api-server"}}[{d}]))')
+        if hit is None or total is None or total == 0:
+            return None
+        return hit / total
 
     per_replica = by_label(
         prom,
@@ -153,10 +213,19 @@ def summarize(prom: str, s: dict[str, Any]) -> dict[str, Any]:
         "resume_server_p99_ms": latency(server, "ResumeActorCold", "", 0.99),
         "pause_client_p50_ms": latency(client, "SuspendActorAsync", ok, 0.5),
         "pause_client_p99_ms": latency(client, "SuspendActorAsync", ok, 0.99),
+        "pause_server_p50_ms": latency(server, "SuspendActorAsync", "", 0.5),
+        "pause_server_p90_ms": latency(server, "SuspendActorAsync", "", 0.9),
+        "pause_server_p95_ms": latency(server, "SuspendActorAsync", "", 0.95),
+        "pause_server_p99_ms": latency(server, "SuspendActorAsync", "", 0.99),
+        "create_server_p50_ms": setup_latency(server, "CreateActor", 0.5),
+        "create_server_p90_ms": setup_latency(server, "CreateActor", 0.9),
+        "create_server_p95_ms": setup_latency(server, "CreateActor", 0.95),
+        "create_server_p99_ms": setup_latency(server, "CreateActor", 0.99),
         "resume_client_mean_ms": mean_ms(client, "ResumeActorCold", ok),
         "resume_server_mean_ms": mean_ms(server, "ResumeActorCold", ""),
         "pause_client_mean_ms": mean_ms(client, "SuspendActorAsync", ok),
         "pause_server_mean_ms": mean_ms(server, "SuspendActorAsync", ""),
+        "create_server_mean_ms": setup_mean_ms(server, "CreateActor"),
         "ateapi_cores": q(cpu % ("ate-api-server", d, secs)),
         # Each replica's cores, busiest first.
         "ateapi_cores_per_replica": sorted(per_replica.values(), reverse=True),
@@ -170,7 +239,15 @@ def summarize(prom: str, s: dict[str, Any]) -> dict[str, Any]:
         "pg_commits_per_s": q(f'sum(increase(pg_stat_database_xact_commit{{datname="atepg"}}[{d}]))/{secs}'),
         "pg_lock_wait_conns": q(pg_conns % (',state="active",wait_event_type="Lock"', d)),
         "pg_walwrite_wait_conns": q(pg_conns % (',state="active",wait_event="WALWrite"', d)),
+        "openfga_db_queries_per_s": q(f'sum(increase(openfga_datastore_query_count_sum{{job="ate-api-server"}}[{d}]))/{secs}'),
+        "openfga_check_cache_hit_ratio": cache_hit_ratio("check"),
+        "openfga_tuples_cache_hit_ratio": cache_hit_ratio("tuples"),
+        "openfga_cache_items": q(f'max(max_over_time(openfga_cache_item_count{{job="ate-api-server"}}[{d}]))'),
     }
+    for prefix, relation in (("authz_resume", "can_resume"), ("authz_suspend", "can_suspend")):
+        out.update(authz_stats(prefix, relation))
+    for prefix, relation in (("authz_create_actor", "can_create_actor"), ("authz_use_template", "can_use_template")):
+        out.update(authz_setup_stats(prefix, relation))
     out.update(memory(prom, d, secs, b))
     return out
 
